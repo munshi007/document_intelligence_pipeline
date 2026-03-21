@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+
+# Logs
+*.log
+pipeline.log
+training.log
+wandb/
+
+# Research & Models (LARGE FILES - DO NOT PUSH)
+research/vlm_student_model/
+research/outputs/
+research/dataset/
+weights/
+models/weights/
+
+# Data & Output
+data/
+output/
+TEST_LLM/
+
+# Env & Secrets
+.env
+.venv
+.cache/
+
+# IDEs
+.vscode/
+.idea/
+.ipynb_checkpoints/

@@ -1,0 +1,28 @@
+[project]
+name = "pdf_pipeline"
+version = "2.0.0"
+description = "Professional PDF processing pipeline with layout detection and table extraction"
+requires-python = ">=3.10"
+
+dependencies = [
+    "pymupdf>=1.24.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "paddleocr>=2.7.0",
+    "paddlepaddle",
+    "ultralytics>=8.0.0",
+    "doclayout-yolo",
+    "layoutparser",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "huggingface-hub",
+    "requests",
+    "Pillow",
+]
+
+[project.scripts]
+pdf-pipeline = "cli:main"
+
+[tool.setuptools]
+packages = ["analysis", "models", "output", "processors", "utils"]
+py-modules = ["cli", "pipeline", "config"]
