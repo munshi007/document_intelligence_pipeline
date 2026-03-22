@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description="Enhanced PDF Processing Pipeline")
     parser.add_argument("pdf_path", help="Path to the PDF file to process")
-    parser.add_argument("--model", help="VLM model to use (e.g., gpt-4o, qwen2.5-vl:7b)", default=None)
-    parser.add_argument("--provider", help="VLM provider (openai, ollama, internvl, got-ocr)", default=None)
+    parser.add_argument("--model", help="VLM model to use (e.g., gpt-4o, research/vlm_student_model)", default=None)
+    parser.add_argument("--provider", help="VLM provider (openai, ollama, local, internvl, got-ocr)", default=None)
     parser.add_argument("--strategy", choices=['gpt4o', 'sota_os', 'fast_os'], help="Research strategy (gpt4o, sota_os, fast_os)", default=None)
     parser.add_argument("--distill", help="Enable Self-Distillation (Capture Teacher data)", action="store_true")
     parser.add_argument("--pages", help="Page range to process (e.g., 1-3, 5)", default=None)
@@ -28,11 +28,9 @@ def main():
     
     args = parser.parse_args()
     
-    args = parser.parse_args()
-    
     input_path = Path(args.pdf_path)
     
-    # SOTA: Batch directory processing
+    # Batch directory processing
     if input_path.is_dir():
         pdf_files = list(input_path.glob("**/*.pdf"))
         logger.info(f"Batch mode: Found {len(pdf_files)} PDFs in {input_path}")
@@ -53,16 +51,42 @@ def main():
                 strategy=args.strategy,
                 distill=args.distill
             )
-            pipeline.process_pdf(
+            result = pipeline.process_pdf(
                 str(pdf_path), 
                 page_range=args.pages, 
                 max_pages=args.max_pages
             )
+            if result:
+                print_summary(result, pipeline)
             logger.info(f"Successfully processed: {pdf_path.name}")
         except Exception as e:
             logger.error(f"Failed to process {pdf_path.name}: {e}")
             if not input_path.is_dir(): # Re-raise if single file mode
                 raise
+
+def print_summary(result: dict, pipeline):
+    """Print processing summary to console."""
+    print("\n" + "="*80)
+    print("PDF LAYOUT PROCESSING COMPLETE")
+    print("="*80)
+    print(f"Document: {result['document_info']['filename']}")
+    print(f"Pages processed: {result['summary']['pages_processed']}")
+    print(f"Total regions detected: {result['summary']['total_regions']}")
+    print(f"Tables found: {result['summary']['tables_found']}")
+    print("\nRegion Types:")
+    for region_type, count in result['summary']['region_types'].items():
+        print(f"  - {region_type}: {count}")
+    print("\nProcessing Methods:")
+    for method, count in result['summary']['processing_methods'].items():
+        print(f"  - {method}: {count}")
+    print("\nOutput Files:")
+    print(f"  - Layout data: {pipeline.output_dir / 'enhanced_layout_blocks.json'}")
+    print(f"  - Markdown content: {pipeline.output_dir / 'extracted_content.md'}")
+    print(f"  - Thumbnails: {pipeline.thumbnails_dir}/")
+    print("="*80)
+    
+    if result['summary']['pages_with_errors'] > 0:
+        print(f"⚠️  Pages with errors: {result['summary']['pages_with_errors']}")
 
 if __name__ == "__main__":
     main()

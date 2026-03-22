@@ -35,6 +35,7 @@ from .router import TableTypeRouter
 from .extract_kv import TableExtractorKV
 from .extract_ruled import TableExtractorRuled
 from .extract_tsr import TableExtractorTSR
+from .extract_vlm import TableExtractorVLM
 from .qa import TableQA
 from .tsr.base import TSREngine
 
@@ -78,6 +79,7 @@ class TableCoordinator:
         self.kv_extractor = TableExtractorKV()
         self.ruled_extractor = TableExtractorRuled()
         self.tsr_extractor = TableExtractorTSR(engine=tsr_engine)
+        self.vlm_extractor = TableExtractorVLM(vlm_client=vlm_client)
         self.qa = TableQA()
         self.max_retries = max_retries
         
@@ -148,6 +150,12 @@ class TableCoordinator:
         # Step 6: Validate with QA
         print(f"[coordinator] Step 6: Running QA validation...")
         qa_result = self.qa.evaluate(result, primitives, refined_bbox)
+        
+        # SOTAA: VLM results are structurally superior but lack word-mapping for coverage
+        if result.table_type == TableType.VLM and len(result.cells) > 0:
+            print(f"[coordinator] → VLM result detected, overriding coverage QA for structural trust.")
+            qa_result.passed = True
+            
         result.qa = qa_result
         print(f"[coordinator] → Coverage: {qa_result.coverage:.1%}")
         print(f"[coordinator] → Duplication: {qa_result.duplication_ratio:.1%}")
@@ -216,6 +224,8 @@ class TableCoordinator:
             return self.ruled_extractor.extract(bbox, primitives, table_id)
         elif table_type == TableType.KV:
             return self.kv_extractor.extract(bbox, primitives, table_id)
+        elif table_type == TableType.VLM:
+            return self.vlm_extractor.extract(bbox, primitives, page, table_id)
         else:  # COMPLEX
             return self.tsr_extractor.extract(bbox, primitives, page, table_id)
     

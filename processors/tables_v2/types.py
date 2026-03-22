@@ -86,10 +86,23 @@ class PageInfo(BaseModel):
         return self.model_dump()
 
 
+class ImagePrimitive(BaseModel):
+    """A raster image embedded in the PDF."""
+    bbox: BBoxPDF
+    width: int = 0
+    height: int = 0
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+
 class TablePrimitives(BaseModel):
     """All extracted primitives for a page, used for table analysis."""
     words: List[WordSpan] = Field(default_factory=list)
     drawings: List[DrawingPrimitive] = Field(default_factory=list)
+    images: List[ImagePrimitive] = Field(default_factory=list)
     page_info: PageInfo = Field(default_factory=PageInfo)
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -122,6 +135,18 @@ class TablePrimitives(BaseModel):
             if self._compute_overlap_ratio(drawing.bbox, bbox) >= overlap_threshold:
                 result.append(drawing)
         return result
+
+    def get_images_in_bbox(self, bbox: BBoxPDF, overlap_threshold: float = 0.3) -> List[ImagePrimitive]:
+        """Get all images that overlap with the given bbox."""
+        if not isinstance(bbox, BBox):
+            bbox = BBox.parse_list_or_tuple(bbox)
+            bbox = BBox(**bbox)
+
+        result = []
+        for img in self.images:
+            if self._compute_overlap_ratio(img.bbox, bbox) >= overlap_threshold:
+                result.append(img)
+        return result
     
     @staticmethod
     def _compute_overlap_ratio(box1: BBox, box2: BBox) -> float:
@@ -153,6 +178,7 @@ class TableType(str, Enum):
     RULED = "ruled"      # Grid table with vector lines
     KV = "kv"            # Key-value / 2-column datasheet
     COMPLEX = "complex"  # Complex structure requiring TSR model
+    VLM = "vlm"          # Technical specialist (grid preservation)
 
 
 class TableCell(BaseModel):
@@ -205,10 +231,40 @@ class TableResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     
     def to_dict(self) -> Dict[str, Any]:
-        # Enum serialization might need help if not auto-handled
+        """Convert result to a dictionary, including rendered forms for the MarkdownRenderer."""
         d = self.model_dump()
         d['table_type'] = self.table_type.value
+        
+        # Add 'rows' for legacy/standard rendering compatibility
+        d['rows'] = self.to_rows()
+        
+        # Add 'markdown_table' to allow the renderer to bypass its own logic
+        d['markdown_table'] = self.to_markdown()
+        
         return d
+    
+    def to_rows(self) -> List[List[str]]:
+        """Convert raw cells into a dense 2D list of strings."""
+        if not self.cells:
+            return []
+            
+        # Build grid
+        grid = {}
+        for cell in self.cells:
+            grid[(cell.row, cell.col)] = cell.text
+            
+        if not grid:
+            return []
+            
+        max_row = max(r for r, c in grid.keys())
+        max_col = max(c for r, c in grid.keys())
+        
+        dense_rows = []
+        for row in range(max_row + 1):
+            row_cells = [grid.get((row, col), "") for col in range(max_col + 1)]
+            dense_rows.append(row_cells)
+            
+        return dense_rows
     
     def to_markdown(self) -> str:
         """Render the table as Markdown."""

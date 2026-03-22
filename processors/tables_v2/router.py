@@ -81,30 +81,46 @@ class TableTypeRouter:
             "drawing_count": len(drawings),
         }
         
-        # Adjust thresholds based on priors
-        r_threshold = self.ruled_threshold
-        k_threshold = self.kv_threshold
+        # 3. Structural Anchor Check (Murr Technical Datasheet Detection)
+        technical_keywords = {"parameter", "conditions", "value", "bedingungen", "wert"}
+        words_lower = [w.text.lower() for w in words]
+        found_anchors = [k for k in technical_keywords if any(k in tw for tw in words_lower)]
         
-        if priors.get("ruled_likelihood", 0) > 0.7:
-            r_threshold *= 0.7  # Lower threshold if VLM thinks it's ruled
-        if priors.get("kv_likelihood", 0) > 0.7:
-            k_threshold *= 0.7
+        is_technical = len(found_anchors) >= 2
         
-        # Ordered decision logic (prevents flip-flopping)
-        if len(words) < self.min_words_for_analysis:
-            print(f"[router] Too few words ({len(words)}), defaulting to COMPLEX")
+        # 4. Multi-Gap Detection (Detect 3+ columns)
+        has_multiple_gaps = self._has_multiple_significant_gaps(words, bbox)
+        
+        # 5. Balancing (Production Logic)
+        if is_technical or has_multiple_gaps:
+            logger.info(f"[router] → Complex TSR forced (Anchors: {found_anchors}, Multi-Gap: {has_multiple_gaps})")
             return TableType.COMPLEX, scores
-        
-        if ruled_score >= r_threshold:
-            print(f"[router] → RULED: ruled_score={ruled_score:.2f} >= {r_threshold:.2f}")
+
+        if ruled_score > 0.4:
             return TableType.RULED, scores
-        
-        if kv_score >= k_threshold:
-            print(f"[router] → KV: kv_score={kv_score:.2f} >= {k_threshold:.2f}")
+            
+        if kv_score > 0.8: # Increased threshold for KV to favor VLM
             return TableType.KV, scores
-        
-        print(f"[router] → COMPLEX: ruled={ruled_score:.2f}, kv={kv_score:.2f}")
+            
+        # Default fallback for complex/technical tables
         return TableType.COMPLEX, scores
+    
+    def _has_multiple_significant_gaps(self, words: List[WordSpan], bbox: BBoxPDF) -> bool:
+        """Detect if there are 2 or more significant vertical lanes (3+ columns)."""
+        if len(words) < 6: return False
+        bbox_width = bbox[2] - bbox[0]
+        x_centers = sorted((w.bbox[0] + w.bbox[2]) / 2 for w in words)
+        
+        gaps = []
+        for i in range(len(x_centers) - 1):
+            gap = x_centers[i+1] - x_centers[i]
+            mid = (x_centers[i] + x_centers[i+1]) / 2
+            rel_pos = (mid - bbox[0]) / bbox_width
+            # Significant gaps in the middle 80% of table
+            if 0.1 < rel_pos < 0.9 and gap > bbox_width * 0.1:
+                gaps.append(gap)
+        
+        return len(gaps) >= 2
     
     def _compute_ruled_score(
         self, 
@@ -212,7 +228,7 @@ class TableTypeRouter:
         # Combined score
         score = gap_ratio * 0.7 + balance * 0.3
         
-        return min(1.0, score * 2)  # Scale up for threshold comparison
+        return min(1.0, score) # Remove aggressive scale-up
     
     def _compute_row_structure_bonus(
         self, 

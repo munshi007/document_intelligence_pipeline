@@ -1,9 +1,9 @@
 """
-SOTA Layout Refining Agent.
-Ensures 'Absolute Best' research-worthy performance by:
-1. Identifying gaps in layout detection (Visual Gap Analysis).
-2. Refining coordinates to sub-pixel character boundaries (Sub-Pixel Refinement).
-3. Ensembling VLM insights with YOLO/LayoutParser detections.
+Layout Refining Agent.
+Provides post-processing to:
+1. Identify gaps in layout detection (Gap Analysis).
+2. Refine coordinates to content boundaries (Sub-Pixel Refinement).
+3. Ensemble VLM insights with primary detections.
 """
 
 import logging
@@ -17,7 +17,7 @@ from common.types import LayoutRegion, BBox
 logger = logging.getLogger(__name__)
 
 class LayoutRefiningAgent:
-    """Agentic layer for layout precision and recovery."""
+    """Refinement layer for layout precision and recovery."""
 
     def __init__(self, vlm_client: VLMClient):
         self.vlm_client = vlm_client
@@ -30,7 +30,7 @@ class LayoutRefiningAgent:
         metadata: Optional[Dict] = None
     ) -> List[LayoutRegion]:
         """
-        SOTA: Refine the existing ensemble by scanning for missed content.
+        Refine the existing ensemble by scanning for missed content.
         """
         logger.info(f"LayoutRefiningAgent: Analyzing ensemble coverage ({len(existing_regions)} regions)...")
         
@@ -52,10 +52,10 @@ class LayoutRefiningAgent:
         )
         
         if not gap_analysis or not gap_analysis.found_missed_content:
-            logger.info("LayoutRefiningAgent: No missed content found by SOTA scan.")
+            logger.info("LayoutRefiningAgent: No missed content found.")
             return existing_regions
             
-        logger.info(f"LayoutRefiningAgent: SOTA scan found {len(gap_analysis.missed_regions)} missed regions!")
+        logger.info(f"LayoutRefiningAgent: Found {len(gap_analysis.missed_regions)} missed regions.")
         
         # 2. Convert RefinedRegion to LayoutRegion and merge
         refined_list = existing_regions.copy()

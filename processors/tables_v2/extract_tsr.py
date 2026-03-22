@@ -88,6 +88,31 @@ class TableExtractorTSR:
         
         try:
             crop_image, image_size = self.engine.render_crop(page, bbox, self.render_dpi)
+            
+            # --- ADVANCED SOTA: NATIVE RASTER MASKING ---
+            table_images = primitives.get_images_in_bbox(bbox, overlap_threshold=0.3)
+            if table_images:
+                logger.info(f"Masking {len(table_images)} embedded images/graphs from TATR crop.")
+                import cv2
+                crop_image = np.copy(crop_image) # Ensure writable
+                
+                pdf_width = bbox[2] - bbox[0]
+                pdf_height = bbox[3] - bbox[1]
+                scale_x = image_size[0] / pdf_width if pdf_width > 0 else 1.0
+                scale_y = image_size[1] / pdf_height if pdf_height > 0 else 1.0
+                
+                for img_prim in table_images:
+                    # Map from PDF coords to relative pixel coords in the crop
+                    px_x0 = int((max(img_prim.bbox[0], bbox[0]) - bbox[0]) * scale_x)
+                    px_y0 = int((max(img_prim.bbox[1], bbox[1]) - bbox[1]) * scale_y)
+                    px_x1 = int((min(img_prim.bbox[2], bbox[2]) - bbox[0]) * scale_x)
+                    px_y1 = int((min(img_prim.bbox[3], bbox[3]) - bbox[1]) * scale_y)
+                    
+                    if px_x1 > px_x0 and px_y1 > px_y0:
+                        # White out the graph region completely
+                        cv2.rectangle(crop_image, (px_x0, px_y0), (px_x1, px_y1), (255, 255, 255), -1)
+            # --------------------------------------------
+            
         except Exception as e:
             logger.warning(f"Failed to render table crop: {e}")
             return self._empty_result(table_id, bbox, start_time, f"Render failed: {e}")
@@ -95,6 +120,7 @@ class TableExtractorTSR:
         # Run TSR model
         try:
             cells_px = self.engine.predict_cells(crop_image)
+
         except Exception as e:
             logger.warning(f"TSR prediction failed: {e}")
             return self._empty_result(table_id, bbox, start_time, f"TSR failed: {e}")

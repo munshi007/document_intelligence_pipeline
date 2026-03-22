@@ -14,11 +14,11 @@ class ReadingOrderPrior(BaseModel):
     reasoning: str = Field(
         description="Chain-of-thought analysis of the page structure. Are there columns? floating images?"
     )
-    layout_type: Literal["simple_linear", "multi_column", "complex_unstructured"] = Field(
-        description="Classification of the document layout."
+    layout_type: str = Field(
+        description="Classification of the document layout (e.g., simple_linear, multi_column)."
     )
-    suggested_strategy: Literal["xy_cut", "xy_cut_column_first", "deep_model"] = Field(
-        description="The recommended reading order extraction strategy."
+    suggested_strategy: str = Field(
+        description="The recommended reading order extraction strategy (e.g., xy_cut)."
     )
 
 class ReadingOrderVerification(BaseModel):
@@ -35,8 +35,8 @@ class ReadingOrderVerification(BaseModel):
         ge=0, le=10, 
         description="Coherence score 0-10. 10 is perfect flow, 0 is jumbled soup."
     )
-    suggested_action: Literal["accept", "rerun_column_first", "escalate"] = Field(
-        description="Action to take based on the quality assessment."
+    suggested_action: str = Field(
+        description="Action to take based on the quality assessment (e.g., accept, rerun)."
     )
 
 
@@ -51,10 +51,10 @@ class TablePrior(BaseModel):
     is_table: bool = Field(
         description="Is this image region actually a table? False if it's just text or a figure."
     )
-    table_type: Literal["ruled", "kv", "complex", "sparse"] = Field(
-        description="Classification of the table type based on visual cues."
+    table_type: str = Field(
+        description="Classification of the table type based on visual cues (e.g., ruled, kv, complex)."
     )
-    suggested_strategy: Literal["ruled_vector", "text_cluster", "hybrid", "complex_ltr"] = Field(
+    suggested_strategy: str = Field(
         description="Best extraction algorithm to use based on the table type."
     )
 
@@ -75,19 +75,19 @@ class TableVerification(BaseModel):
     merged_columns: bool = Field(
         description="Are separate columns incorrectly merged in the text?"
     )
-    score: int = Field(
+    score: float = Field(
         ge=0, le=10, 
         description="Quality score 0-10. 10 is perfect, 0 is garbage."
     )
-    suggested_action: Literal["accept", "rerun_kv", "rerun_ruled", "rerun_complex", "escalate"] = Field(
-        description="Action to take based on the quality assessment."
+    suggested_action: str = Field(
+        description="Action to take based on the quality assessment (e.g., accept, rerun_kv)."
     )
 class FontSignature(BaseModel):
     """Raw physical truth extracted from pdfplumber per text span."""
-    size: float = Field(description="Font size in points (e.g., 14.5)")
-    fontname: str = Field(description="Font name (e.g., 'TimesNewRomanPS-BoldMT')")
-    is_bold: bool = Field(description="Derived from font flags")
-    is_italic: bool = Field(description="Derived from font flags")
+    size: float = Field(default=10.0, description="Font size in points (e.g., 14.5)")
+    fontname: str = Field(default="unknown", description="Font name (e.g., 'TimesNewRomanPS-BoldMT')")
+    is_bold: bool = Field(default=False, description="Derived from font flags")
+    is_italic: bool = Field(default=False, description="Derived from font flags")
     color: Optional[str] = Field(default=None, description="Hex color (some docs use color for headers)")
 
     def __hash__(self):
@@ -126,5 +126,5 @@ class VisualGapAnalysis(BaseModel):
     SOTA: Visual Gap Analysis output.
     Used to scan 'empty' areas of a page for missed content (like small captions or logos).
     """
-    found_missed_content: bool = Field(description="True if there is content in this crop not covered by existing boxes.")
+    found_missed_content: bool = Field(default=False, description="True if there is content in this crop not covered by existing boxes.")
     missed_regions: list[RefinedRegion] = Field(default_factory=list, description="List of newly discovered regions.")

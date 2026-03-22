@@ -9,6 +9,7 @@ from .pipeline_config import (
     DOCLAYOUT_CONFIG,
     VLM_CONFIG,
     LOGGING_CONFIG,
+    WEIGHTS_CONFIG,
     setup_environment,
     get_output_paths
 )

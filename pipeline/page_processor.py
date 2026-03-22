@@ -83,7 +83,7 @@ class PageProcessor:
                 }
             }
             
-            # Define canonical image metadata for distillation (SOTA Deduplication)
+            # Define standard image metadata
             pdf_id = Path(current_pdf_path).stem
             page_id = f"{pdf_id}_p{page_num:03d}"
             vlm_metadata = {
@@ -133,8 +133,8 @@ class PageProcessor:
             )
             logger.info(f"Detected {len(layout_regions)} layout regions")
 
-            # Step 2.5: SOTA Layout Refinement (Gap Analysis)
-            # This is the "Absolute Best" research layer to find missed content
+            # Layout Refinement (Gap Analysis)
+            # Find possible missed content using VLM
             if self.layout_refiner and self.vlm_client:
                 logger.info("Starting SOTA Layout Refinement (Gap Analysis)...")
                 pil_page = Image.fromarray(page_image)
@@ -142,7 +142,7 @@ class PageProcessor:
                 # Convert layout_regions (dicts) to LayoutRegion objects
                 regions_obj = [LayoutRegion.from_dict(r, overrides={'page_num': page_num}) for r in layout_regions]
                 
-                logger.info("Executing SOTA Layout Refiner (Visual Gap Analysis & Precision)...")
+                logger.info("Executing Layout Refiner (Visual Gap Analysis)...")
                 # Refine ensemble (Gap Analysis & Snap)
                 refined_objs = self.layout_refiner.refine_layout_ensemble(
                     pil_page, 
@@ -151,9 +151,9 @@ class PageProcessor:
                     metadata=vlm_metadata
                 )
                 
-                # Convert back to legacy format
+                # Convert back to dict format
                 layout_regions = [r.to_dict() for r in refined_objs]
-                logger.info(f"SOTA Refinement complete: {len(layout_regions)} regions")
+                logger.info(f"Refinement complete: {len(layout_regions)} regions")
 
             # Step 7 (Pre-Conversion): Process regions hierarchically in IMAGE SPACE
             # This ensures LayoutLMv3 crops are accurate
@@ -187,9 +187,9 @@ class PageProcessor:
                     page_num, 
                     i+1,
                     doc_profile=doc_profile,
-                    pdf_path=current_pdf_path,  # Pass PDF path
-                    pdf_page_num=page_num - 1,  # pdfplumber uses 0-indexed pages
-                    pdf_bbox=pdf_bbox,  # Pass PDF-space bbox for pdfplumber
+                    pdf_path=current_pdf_path,
+                    pdf_page_num=page_num - 1,
+                    pdf_bbox=pdf_bbox,
                     fitz_page=page,     # Pass the actual PyMuPDF page object required by tables_v2
                     vlm_metadata=vlm_metadata
                 )
@@ -214,7 +214,7 @@ class PageProcessor:
             # Step 7: (Replaced by Image-Space Step 7 above)
             logger.info(f"Hierarchical processing completed: {len(merged_regions)} regions")
             
-            # Step 7.5: Merge remaining regions intelligently
+            # Merge remaining regions
             logger.info("Merging processed regions")
             # We pass empty list for text_blocks here as they are already integrated
             merged_regions = merge_regions(merged_regions, [])
@@ -271,8 +271,8 @@ class PageProcessor:
                         except Exception as e:
                             logger.warning(f"Failed to extract/repair text for region {r.get('id', 'unknown')}: {e}")
 
-            # Step 9: Apply Reading Order (VLM-Guided + Recursive XY-Cut)
-            logger.info("Resolving Reading Order flow (VLM Planner & Referee)...")
+            # Apply Reading Order
+            logger.info("Resolving Reading Order flow...")
             # 9a: Ask VLM Planner for layout classification
             layout_prior = None
             if self.reading_order_planner:
@@ -299,9 +299,8 @@ class PageProcessor:
             logger.info("Reading order applied successfully")
             logger.info(f"After cleanup: {len(merged_regions)} regions")
             
-            # Step 10: Generate clean markdown content
-            logger.info("Starting Specialist Content Extraction & Markdown Generation...")
-            logger.info("Generating clean markdown content")
+            # Generate clean markdown content
+            logger.info("Generating markdown content...")
             self.markdown_renderer.clean_output = not self.debug_mode  # Clean output unless debug
             markdown_content = self.markdown_renderer.extract_markdown_from_regions(merged_regions)
 

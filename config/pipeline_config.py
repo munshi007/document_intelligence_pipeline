@@ -13,6 +13,15 @@ MODEL_CONFIG = {
     'table_detection_threshold': 0.5, # Lowered to 0.5
 }
 
+# Centralized Weights Paths (pointing to the clean 'models/' directory)
+WEIGHTS_CONFIG = {
+    'layout_config': 'models/layout/publaynet_config.yaml',
+    'layout_weights': 'models/layout/publaynet_weights.pkl',
+    'custom_model': 'models/custom/',
+    'table_model': 'models/table/',
+    'ocr_model': 'models/ocr/',
+}
+
 # VLM Configuration (SOTA Agentic Layer)
 VLM_CONFIG = {
     'default_model': 'qwen2.5-vl:7b',

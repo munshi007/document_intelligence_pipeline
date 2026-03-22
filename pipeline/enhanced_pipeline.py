@@ -16,9 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import MODEL_CONFIG, FONT_CONFIG, OUTPUT_CONFIG, setup_environment, get_output_paths
 
 # Import components
-from models.layout_detector import LayoutDetector
-from models.ocr_engine import OCREngine
-from models.table_structure_model import TableStructureModel
+from modules.layout_detector import LayoutDetector
+from modules.ocr_engine import OCREngine
+from modules.table_structure_model import TableStructureModel
 from processors.table_extractor import TableExtractor
 from processors.font_analyzer import FontAnalyzer
 from processors.stylesheet_planner import StylesheetPlanner
@@ -33,7 +33,7 @@ from processors.figure_caption_processor import FigureCaptionProcessor
 from processors.region_processor import RegionProcessor
 from common.vlm_client import VLMClient
 from processors.layout_refiner import LayoutRefiningAgent
-from research.distillation_agent import DistillationAgent
+from research.deprecated.distillation_agent import DistillationAgent
 
 # Import new pipeline modules
 from pipeline.page_processor import PageProcessor
@@ -56,7 +56,7 @@ class EnhancedPipeline:
         self.strategy = strategy
         self.distill = distill
         
-        # SOTA: Strategy-based model selection
+        # Strategy-based model selection
         if strategy == 'gpt4o':
             self.vlm_config = {"model": "gpt-4o", "provider": "openai"}
         elif strategy == 'sota_os':
@@ -140,10 +140,10 @@ class EnhancedPipeline:
         components['reading_order_resolver'] = ReadingOrderResolver()
         logger.info("Reading order resolver initialized")
         
-        # Initialize VLM Client (SOTA Agentic Router)
+        # Initialize VLM Client
         vlm_client = VLMClient(config=self.vlm_config)
         
-        # SOTA: Initialize Distillation Agent if requested
+        # Initialize Distillation Agent if requested
         if self.distill:
             distillation_agent = DistillationAgent()
             vlm_client.observer = distillation_agent
@@ -169,7 +169,7 @@ class EnhancedPipeline:
         components['region_processor'] = RegionProcessor(use_layoutlm=True)
         logger.info("Region processor initialized")
         
-        # Initialize Layout Refining Agent (SOTA Precision Layer)
+        # Initialize Layout Refining Agent
         components['layout_refiner'] = LayoutRefiningAgent(vlm_client=vlm_client)
         logger.info("Layout Refining Agent initialized")
         
@@ -186,7 +186,7 @@ class EnhancedPipeline:
         )
         logger.info("Table extractor initialized")
 
-        # Initialize Stylesheet Agent (SOTA DOM Grounding)
+        # Initialize Stylesheet Agent
         components['stylesheet_planner'] = StylesheetPlanner(vlm_client=vlm_client)
         logger.info("Stylesheet Planner initialized")
         
@@ -214,7 +214,7 @@ class EnhancedPipeline:
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
 
-            # --- SOTA Step: Global Stylesheet Analysis ---
+            # Global Stylesheet Analysis
             logger.info("Starting Global Stylesheet Analysis...")
             font_analyzer = FontAnalyzer(pdf_path)
             self.components['font_analyzer'] = font_analyzer # Temporary for this run

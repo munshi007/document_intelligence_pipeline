@@ -53,3 +53,14 @@ TEST_LLM/
 .vscode/
 .idea/
 .ipynb_checkpoints/
+models/vlm/
+models/layout/
+models/custom/
+models/**/*.pth
+models/**/*.pt
+models/vlm/
+models/layout/
+models/custom/
+models/**/*.pth
+models/**/*.pt
+models/**/*.bin

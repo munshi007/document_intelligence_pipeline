@@ -53,15 +53,17 @@ class PdfPrimitivesExtractor:
         """
         words = self._extract_words(page)
         drawings = self._extract_drawings(page)
+        images = self._extract_images(page)
         page_info = self._extract_page_info(page)
         
         logger.debug(
-            f"Extracted {len(words)} words, {len(drawings)} drawings from page"
+            f"Extracted {len(words)} words, {len(drawings)} drawings, {len(images)} images from page"
         )
         
         return TablePrimitives(
             words=words,
             drawings=drawings,
+            images=images,
             page_info=page_info,
         )
     
@@ -231,7 +233,26 @@ class PdfPrimitivesExtractor:
         # Also extract rectangles from page annotations if any
         # (Some PDFs use annotations for table borders)
         
+        
         return drawings
+    
+    def _extract_images(self, page: "fitz.Page") -> list:
+        """Extract embedded raster image bounding boxes."""
+        from .types import ImagePrimitive
+        images = []
+        try:
+            for img in page.get_images():
+                xref = img[0]
+                rects = page.get_image_rects(xref)
+                for rect in rects:
+                    images.append(ImagePrimitive(
+                        bbox=(rect.x0, rect.y0, rect.x1, rect.y1),
+                        width=img[2],
+                        height=img[3]
+                    ))
+        except Exception as e:
+            logger.warning(f"Failed to extract images: {e}")
+        return images
     
     def _extract_page_info(self, page: "fitz.Page") -> PageInfo:
         """Extract page metadata for coordinate transformations."""
