@@ -17,11 +17,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     parser = argparse.ArgumentParser(description="Enhanced PDF Processing Pipeline")
-    parser.add_argument("pdf_path", help="Path to the PDF file to process")
-    parser.add_argument("--model", help="VLM model to use (e.g., gpt-4o, research/vlm_student_model)", default=None)
-    parser.add_argument("--provider", help="VLM provider (openai, ollama, local, internvl, got-ocr)", default=None)
-    parser.add_argument("--strategy", choices=['gpt4o', 'sota_os', 'fast_os'], help="Research strategy (gpt4o, sota_os, fast_os)", default=None)
-    parser.add_argument("--distill", help="Enable Self-Distillation (Capture Teacher data)", action="store_true")
+    parser.add_argument("pdf_path", help="Path to the PDF file or directory to process")
     parser.add_argument("--pages", help="Page range to process (e.g., 1-3, 5)", default=None)
     parser.add_argument("--max-pages", type=int, help="Maximum number of pages to process", default=None)
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
@@ -45,11 +41,7 @@ def main():
         try:
             pipeline = EnhancedPipeline(
                 output_dir=output_dir, 
-                debug_mode=args.debug,
-                vlm_model=args.model,
-                vlm_provider=args.provider,
-                strategy=args.strategy,
-                distill=args.distill
+                debug_mode=args.debug
             )
             result = pipeline.process_pdf(
                 str(pdf_path), 

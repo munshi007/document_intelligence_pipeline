@@ -81,25 +81,28 @@ class TableTypeRouter:
             "drawing_count": len(drawings),
         }
         
-        # 3. Structural Anchor Check (Murr Technical Datasheet Detection)
-        technical_keywords = {"parameter", "conditions", "value", "bedingungen", "wert"}
+        # 3. Structural Anchor Check (Technical Datasheet Detection)
+        technical_keywords = {
+            "parameter", "conditions", "value", "bedingungen", "wert", 
+            "u_in", "i_out", "v dc", "v ac", "typ.", "max.", "min.", "function"
+        }
         words_lower = [w.text.lower() for w in words]
         found_anchors = [k for k in technical_keywords if any(k in tw for tw in words_lower)]
         
         is_technical = len(found_anchors) >= 2
         
-        # 4. Multi-Gap Detection (Detect 3+ columns)
+        # 4. Multi-Gap Detection (Detect 3+ columns via Vertical Projection Histogram)
         has_multiple_gaps = self._has_multiple_significant_gaps(words, bbox)
         
         # 5. Balancing (Production Logic)
         if is_technical or has_multiple_gaps:
-            logger.info(f"[router] → Complex TSR forced (Anchors: {found_anchors}, Multi-Gap: {has_multiple_gaps})")
+            logger.info(f"[router] → Complex TSR/VLM forced (Anchors: {found_anchors}, Multi-Gap: {has_multiple_gaps})")
             return TableType.COMPLEX, scores
 
         if ruled_score > 0.4:
             return TableType.RULED, scores
             
-        if kv_score > 0.8: # Increased threshold for KV to favor VLM
+        if kv_score > 0.8: # Increased threshold for KV to favor Specialist VLM
             return TableType.KV, scores
             
         # Default fallback for complex/technical tables
@@ -108,19 +111,42 @@ class TableTypeRouter:
     def _has_multiple_significant_gaps(self, words: List[WordSpan], bbox: BBoxPDF) -> bool:
         """Detect if there are 2 or more significant vertical lanes (3+ columns)."""
         if len(words) < 6: return False
+        
+        # 1. Create a 1D density histogram across the table width
         bbox_width = bbox[2] - bbox[0]
-        x_centers = sorted((w.bbox[0] + w.bbox[2]) / 2 for w in words)
+        num_bins = 100
+        bins = [0] * num_bins
         
-        gaps = []
-        for i in range(len(x_centers) - 1):
-            gap = x_centers[i+1] - x_centers[i]
-            mid = (x_centers[i] + x_centers[i+1]) / 2
-            rel_pos = (mid - bbox[0]) / bbox_width
-            # Significant gaps in the middle 80% of table
-            if 0.1 < rel_pos < 0.9 and gap > bbox_width * 0.1:
-                gaps.append(gap)
+        for w in words:
+            # Map word x-range to bins
+            start_bin = max(0, int((w.bbox[0] - bbox[0]) / bbox_width * num_bins))
+            end_bin = min(num_bins - 1, int((w.bbox[2] - bbox[0]) / bbox_width * num_bins))
+            for b in range(start_bin, end_bin + 1):
+                bins[b] += 1
         
-        return len(gaps) >= 2
+        # 2. Find contiguous sequences of empty/low-density bins
+        # A significant gap is at least 8% of the total width
+        min_gap_width_bins = 8 
+        gaps = 0
+        in_gap = False
+        gap_start = 0
+        
+        # Scan the central 80% to avoid detecting page margins as internal gaps
+        for b in range(10, 90):
+            if bins[b] == 0:
+                if not in_gap:
+                    in_gap = True
+                    gap_start = b
+            else:
+                if in_gap:
+                    if (b - gap_start) >= min_gap_width_bins:
+                        gaps += 1
+                    in_gap = False
+        
+        if in_gap and (90 - gap_start) >= min_gap_width_bins:
+            gaps += 1
+            
+        return gaps >= 2
     
     def _compute_ruled_score(
         self, 

@@ -111,22 +111,40 @@ Chain of Thought: <reasoning>
         prompt: str,
         is_complex: bool = False
     ) -> str:
-        if self.model is None or self.processor is None:
+        if LocalUnslothProvider._model is None:
             return "Error: Local model not initialized"
 
         try:
-            # Re-use private structured logic but without schema enforcement
-            inputs = self.processor(text=prompt, images=image, return_tensors="pt").to("cuda")
+            # Consistent with generate_structured loop
+            messages = [
+                {"role": "user", "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt}
+                ]}
+            ]
             
-            output = self.model.generate(
-                **inputs, 
+            input_text = LocalUnslothProvider._tokenizer.apply_chat_template(
+                messages, 
+                add_generation_prompt=True
+            )
+            
+            inputs = LocalUnslothProvider._tokenizer(
+                image, 
+                input_text, 
+                add_special_tokens=False, 
+                return_tensors="pt"
+            ).to("cuda")
+
+            outputs = LocalUnslothProvider._model.generate(
+                **inputs,
                 max_new_tokens=4096,
                 use_cache=True,
+                temperature=0.1,
                 do_sample=False
             )
             
-            # Use processor's decode
-            result = self.processor.batch_decode(output, skip_special_tokens=True)[0]
+            # Use tokenizer for decoding
+            result = LocalUnslothProvider._tokenizer.decode(outputs[0], skip_special_tokens=True)
             return result.strip()
             
         except Exception as e:

@@ -150,12 +150,11 @@ class EnhancedPipeline:
             logger.info("Distillation Agent initialized and attached to VLM Client")
             
         components['vlm_client'] = vlm_client
-        logger.info(f"VLM Client initialized ({vlm_client.provider}: {vlm_client.model})")
+        logger.info(f"VLM Client initialized ({vlm_client.provider_name}: {vlm_client.model})")
         
-        # Initialize VLM-backed Reading Order Planner & Referee
-        components['reading_order_planner'] = ReadingOrderPlannerVLM(vlm_client=vlm_client)
-        components['reading_order_referee'] = ReadingOrderRefereeVLM(vlm_client=vlm_client)
-        logger.info("Reading Order Planner & Referee initialized")
+        # [STREAMLINED] Planners and Refiners are now deterministic (RT-DETR + XY-Cut)
+        components['reading_order_planner'] = None
+        components['reading_order_referee'] = None
         
         # Initialize semantic text grouper
         components['semantic_grouper'] = SemanticTextGrouper()
@@ -165,13 +164,13 @@ class EnhancedPipeline:
         components['figure_caption_processor'] = FigureCaptionProcessor()
         logger.info("Figure-caption processor initialized")
         
-        # Initialize region processor (hierarchical processing with LayoutLMv3)
-        components['region_processor'] = RegionProcessor(use_layoutlm=True)
-        logger.info("Region processor initialized")
+        # Initialize region processor (hierarchical processing - switched to base RT-DETR)
+        components['region_processor'] = RegionProcessor(use_layoutlm=False)
+        logger.info("Region processor initialized (RT-DETR only)")
         
-        # Initialize Layout Refining Agent
-        components['layout_refiner'] = LayoutRefiningAgent(vlm_client=vlm_client)
-        logger.info("Layout Refining Agent initialized")
+        # [STREAMLINED] Layout Refining is now handled by RT-DETR/TATR anchors
+        components['layout_refiner'] = None
+
         
         # Initialize table structure model (TATR)
         components['table_structure_model'] = TableStructureModel()

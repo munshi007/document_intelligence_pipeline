@@ -62,14 +62,13 @@ def build_final_result(pdf_path: str, doc_page_count: int, pages_data: List[Dict
         },
         "pipeline_config": config,
         "model_info": {
-            "layout_model_available": True,
-            "ocr_reader_available": True,
-            "ocr_type": "paddle",
+            "layout_model": "RT-DETR V2",
+            "ocr_engine": "PyMuPDF / VLM Specialist",
             "dependencies": {
-                "doclayout_yolo": True,
+                "pymupdf": True,
                 "torch": True,
                 "ultralytics": True,
-                "layoutparser": True
+                "unsloth": True
             }
         },
         "pages": pages_data,

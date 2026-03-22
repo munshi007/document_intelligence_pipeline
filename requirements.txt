@@ -1,13 +1,13 @@
 pymupdf>=1.24.0
 opencv-python>=4.8.0
 numpy>=1.24.0
-paddleocr>=2.7.0
-paddlepaddle
 ultralytics>=8.0.0
-doclayout-yolo
-layoutparser
 torch>=2.0.0
 transformers>=4.30.0
 huggingface-hub
 requests
 Pillow
+pydantic>=2.0.0
+python-dotenv
+tqdm
+unsloth
