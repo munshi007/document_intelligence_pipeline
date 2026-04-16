@@ -4,7 +4,7 @@ A professional, modular PDF processing pipeline for layout detection, table extr
 
 This project is the implementation of a VLM Distillation framework where a "Teacher" model (GPT-4o-V) was used to fine-tune a "Student" model (Llama-3.2-11B-Vision) for high-accuracy document hierarchy recognition.
 
-## 🧠 Model Weights
+## Model Weights
 
 The fine-tuned Vision-Language Model (VLM) weights produced by this pipeline are hosted on Hugging Face:
 
