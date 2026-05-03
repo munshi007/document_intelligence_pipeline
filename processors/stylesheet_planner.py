@@ -24,10 +24,18 @@ class StylesheetPlanner:
         Asks the VLM to visually hypothesize the semantic stylesheet for the document.
         """
         prompt = (
-            "Analyze the layout and typography of this document page. "
-            "Identify the visual hierarchy: title, headers (H1, H2, H3), body text, and captions. "
-            "For each style, estimate its relative font size (e.g., body=12, H1=18), whether it is bold or italic, "
-            "and note any distinct colors. Do not hallucinate content; focus purely on the visual structure."
+            "Analyze the layout and typography of this document page to identify its DocumentStyleSheet.\n"
+            "Identify the visual hierarchy: title, h1, h2, h3, body, and caption.\n\n"
+            "### JSON STRUCTURE CONSTRAINTS:\n"
+            "1. Each style field (like 'title' or 'body') MUST be an object { } with these fields:\n"
+            "   - 'size': numeric float\n"
+            "   - 'fontname': string name\n"
+            "   - 'is_bold': boolean\n"
+            "   - 'is_italic': boolean\n"
+            "   - 'color': hex string or null\n"
+            "2. DO NOT output a simple string for these fields.\n"
+            "3. Focus on relative visual hierarchy (e.g. h1 is larger and bolder than body).\n"
+            "4. Provide 'reasoning' as a separate top-level field."
         )
         
         stylesheet = self.vlm_client.generate_structured(
@@ -45,7 +53,7 @@ class StylesheetPlanner:
         deterministic_fallback = font_analyzer.infer_stylesheet_from_stats(page_limit=page_limit)
         
         if not vlm_stylesheet:
-            logger.warning("VLM Stylesheet generation offline. Using deterministic fallback.")
+            logger.info("VLM Stylesheet: No vision feedback (Offline). Using deterministic font analyzer.")
             return deterministic_fallback
             
         logger.info("Grounding VLM stylesheet against deterministic font physics.")

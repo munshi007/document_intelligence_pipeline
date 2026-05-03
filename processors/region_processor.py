@@ -21,11 +21,32 @@ class RegionProcessor:
     Filters out text that's inside figures/tables via pure CV.
     """
     
+<<<<<<< HEAD
     def __init__(self, use_layoutlm: bool = False):
         """Initialize region processor."""
         # LayoutLM is deprecated in this production pipeline
         self.use_layoutlm = False
         logger.info("RegionProcessor: Initialized in Deterministic-Only mode.")
+=======
+    def __init__(self, use_layoutlm: bool = True):
+        """
+        Initialize region processor.
+        
+        Args:
+            use_layoutlm: Whether to use LayoutLMv3 for smart classification
+        """
+        self.use_layoutlm = use_layoutlm
+        self.layoutlm_classifier = None
+        
+        if use_layoutlm:
+            try:
+                from modules.layoutlm_classifier import LayoutLMClassifier
+                self.layoutlm_classifier = LayoutLMClassifier(use_layoutlm=True)
+                logger.info("LayoutLM classifier initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LayoutLM classifier: {e}")
+                self.layoutlm_classifier = None
+>>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
     
     def process_regions_hierarchically(
         self,

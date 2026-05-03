@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "$id": "http://example.com/murrelektronik-final-v4.schema.json",
+  "title": "MurrelektronikFinalRichExtraction",
+  "description": "Final high-precision schema for complex industrial technical data.",
+  "type": "object",
+  "properties": {
+    "product_identity": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "art_no": { "type": "string" },
+        "manufacturer": { "type": "string" },
+        "serial_series": { "type": "string" }
+      }
+    },
+    "environmental_mechanical": {
+      "type": "object",
+      "properties": {
+        "temperature_operating_min": { "type": "string" },
+        "temperature_operating_max": { "type": "string" },
+        "humidity_operating_max": { "type": "string" },
+        "protection_degree": { "type": "string" },
+        "material_properties": { "type": "array", "items": { "type": "string" } },
+        "conformity_standards": { "type": "array", "items": { "type": "string" } },
+        "weight": { "type": "string" }
+      }
+    },
+    "industrial_io": {
+      "type": "object",
+      "properties": {
+        "coding": { "type": "string" },
+        "pins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pin": { "type": "string" },
+              "signal": { "type": "string" },
+              "function": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "electrical_data": {
+      "type": "object",
+      "properties": {
+        "supply_voltage_dc": { "type": "string" },
+        "supply_voltage_ac": { "type": "string" },
+        "current_operating_per_contact": { "type": "string" },
+        "fuse": { "type": "string" },
+        "power_consumption": { "type": "string" }
+      },
+      "additionalProperties": { "type": "string" }
+    },
+    "emc_compliance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "test_name": { "type": "string" },
+          "standard": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      }
+    },
+    "catch_all_technical_data": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "reasoning_thoughts": { "type": "string" },
+    "confidence_score": { "type": "number" }
+  },
+  "required": ["product_identity"]
+}

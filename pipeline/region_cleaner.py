@@ -77,9 +77,26 @@ def cleanup_regions(regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     3. Tables are handled by pdfplumber, so remove OCR text from tables.
     """
     # Separate by source
-    model_regions = [r for r in regions if r.get('source') == 'layout_model']
-    text_regions = [r for r in regions if r.get('source') != 'layout_model']
+    # SOTA: Include both 'layout_model' and 'ensemble' as authoritative sources
+    all_model_regions = [r for r in regions if r.get('source') in ['layout_model', 'ensemble']]
+    text_regions = [r for r in regions if r.get('source') == 'native_pdf']
     
+    # 0. Deduplicate Model Regions vertically (e.g., Figures swallowing Tables)
+    model_regions = []
+    for m in all_model_regions:
+        m_type = m.get('type', '').lower()
+        if m_type == 'figure':
+            # Check if this figure completely contains any tables
+            m_bbox = m.get('bbox')
+            swallows_table = False
+            for other_m in all_model_regions:
+                if other_m.get('type', '').lower() == 'table':
+                    o_bbox = other_m.get('bbox')
+                    if m_bbox and o_bbox and is_contained(o_bbox, m_bbox, threshold=0.8):
+                        swallows_table = True
+                        break
+        model_regions.append(m)
+        
     logger.info(f"Cleanup: {len(model_regions)} model regions, {len(text_regions)} text regions")
     
     # For each text region, check if it's in "empty space"

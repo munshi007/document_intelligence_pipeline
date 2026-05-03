@@ -13,7 +13,7 @@ import sys
 # Add parent directory to path for imports if needed (though package structure should handle this)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import MODEL_CONFIG, FONT_CONFIG, OUTPUT_CONFIG, setup_environment, get_output_paths
+from config import MODEL_CONFIG, FONT_CONFIG, OUTPUT_CONFIG, VLM_CONFIG, setup_environment, get_output_paths
 
 # Import components
 from modules.layout_detector import LayoutDetector
@@ -33,7 +33,8 @@ from processors.figure_caption_processor import FigureCaptionProcessor
 from processors.region_processor import RegionProcessor
 from common.vlm_client import VLMClient
 from processors.layout_refiner import LayoutRefiningAgent
-from research.deprecated.distillation_agent import DistillationAgent
+from research.distillation_agent import DistillationAgent
+from processors.table_anchor_associator import TableAnchorAssociator
 
 # Import new pipeline modules
 from pipeline.page_processor import PageProcessor
@@ -66,9 +67,10 @@ class EnhancedPipeline:
             # Local efficiency focus
             self.vlm_config = {"model": "minicpm-v-2.6", "provider": "ollama"}
         else:
+            final_model = vlm_model or VLM_CONFIG.get("default_model")
             self.vlm_config = {
-                "model": vlm_model or "qwen2.5-vl:7b",
-                "provider": vlm_provider
+                "model": final_model,
+                "provider": vlm_provider or VLM_CONFIG.get("default_provider")
             }
         
         # Get output paths
@@ -128,19 +130,7 @@ class EnhancedPipeline:
         components['document_analyzer'] = DocumentAnalyzer()
         logger.info("Document analyzer initialized")
         
-        # Initialize layout detector (loads model once)
-        components['layout_detector'] = LayoutDetector(debug_mode=self.debug_mode)
-        logger.info("Layout detector initialized")
-        
-        # Initialize OCR engine (loads model once)
-        components['ocr_engine'] = OCREngine()
-        logger.info("OCR engine initialized")
-        
-        # Initialize reading order resolver (deterministic fallback)
-        components['reading_order_resolver'] = ReadingOrderResolver()
-        logger.info("Reading order resolver initialized")
-        
-        # Initialize VLM Client
+        # Initialize VLM Client FIRST (needed by LayoutDetector for semantic refinement)
         vlm_client = VLMClient(config=self.vlm_config)
         
         # Initialize Distillation Agent if requested
@@ -152,9 +142,31 @@ class EnhancedPipeline:
         components['vlm_client'] = vlm_client
         logger.info(f"VLM Client initialized ({vlm_client.provider_name}: {vlm_client.model})")
         
+<<<<<<< HEAD
         # [STREAMLINED] Planners and Refiners are now deterministic (RT-DETR + XY-Cut)
         components['reading_order_planner'] = None
         components['reading_order_referee'] = None
+=======
+        # Initialize layout detector with VLM for semantic refinement
+        components['layout_detector'] = LayoutDetector(
+            debug_mode=self.debug_mode,
+            vlm_client=vlm_client
+        )
+        logger.info("Layout detector initialized (with VLM semantic refinement)")
+        
+        # Initialize OCR engine (loads model once)
+        components['ocr_engine'] = OCREngine()
+        logger.info("OCR engine initialized")
+        
+        # Initialize reading order resolver (deterministic fallback)
+        components['reading_order_resolver'] = ReadingOrderResolver()
+        logger.info("Reading order resolver initialized")
+        
+        # Initialize VLM-backed Reading Order Planner & Referee
+        components['reading_order_planner'] = ReadingOrderPlannerVLM(vlm_client=vlm_client)
+        components['reading_order_referee'] = ReadingOrderRefereeVLM(vlm_client=vlm_client)
+        logger.info("Reading Order Planner & Referee initialized")
+>>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
         
         # Initialize semantic text grouper
         components['semantic_grouper'] = SemanticTextGrouper()
@@ -175,6 +187,10 @@ class EnhancedPipeline:
         # Initialize table structure model (TATR)
         components['table_structure_model'] = TableStructureModel()
         logger.info("Table structure model initialized")
+
+        # Initialize Table Anchor Associator
+        components['table_anchor_associator'] = TableAnchorAssociator()
+        logger.info("Table Anchor Associator initialized")
 
         # Initialize table extractor with Tables v2 coordinator
         components['table_extractor'] = TableExtractor(

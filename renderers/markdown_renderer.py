@@ -158,12 +158,19 @@ class MarkdownRenderer:
             
             table_md = self._format_table_as_markdown(rows)
         
-        # Add caption if available
+        # Add anchored title or caption if available
+        parts = []
+        
+        anchor_text = region.get("anchor_text")
+        if anchor_text:
+            parts.append(f"**{anchor_text.strip()}**")
+            
         caption = region.get("caption")
         if caption:
-            return f"{caption}\n\n{table_md}"
-        
-        return table_md
+            parts.append(f"*{caption.strip()}*")
+            
+        parts.append(table_md)
+        return "\n\n".join(parts)
     
     def _is_valid_table(self, rows: List[List[str]]) -> bool:
         """
@@ -274,22 +281,14 @@ class MarkdownRenderer:
             r = r[:median_len] + [""] * (median_len - len(r))
             norm.append([self._clean_cell_for_markdown(c) for c in r])
 
-        header_keywords = [
-            "Pin", "Channel", "IN", "OUT", "Type", "Name", "Value", "Unit",
-            "Description", "Min", "Max", "Typ", "Typical", "Condition", "Parameter",
-            "Symbol", "Rating", "Limit", "Test", "No", "Number", "Voltage", "Current",
-            "Frequency", "Temperature", "Power", "Input", "Output", "Function"
-        ]
-
-        def row_has_header_words(r: List[str]) -> bool:
-            return any(any(k.lower() in (c or "").lower() for k in header_keywords) for c in r)
-
-        if row_has_header_words(norm[0]):
+        # Assume the first row is the header, which is standard for most tables
+        # and prevents domain-specific hallucination (e.g., requiring 'Voltage' or 'Pin')
+        if len(norm) > 0:
             header = norm[0]
             data_rows = norm[1:]
         else:
             header = [f"Col{i+1}" for i in range(median_len)]
-            data_rows = norm
+            data_rows = []
 
         lines: List[str] = []
         lines.append("| " + " | ".join(header) + " |")

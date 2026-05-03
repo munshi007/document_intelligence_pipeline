@@ -15,8 +15,8 @@ MODEL_CONFIG = {
 
 # Centralized Weights Paths (pointing to the clean 'models/' directory)
 WEIGHTS_CONFIG = {
-    'layout_config': 'models/layout/publaynet_config.yaml',
-    'layout_weights': 'models/layout/publaynet_weights.pkl',
+    'layout_config': 'weights/publaynet_config.yaml',
+    'layout_weights': 'weights/publaynet_weights.pkl',
     'custom_model': 'models/custom/',
     'table_model': 'models/table/',
     'ocr_model': 'models/ocr/',
@@ -24,7 +24,8 @@ WEIGHTS_CONFIG = {
 
 # VLM Configuration (SOTA Agentic Layer)
 VLM_CONFIG = {
-    'default_model': 'qwen2.5-vl:7b',
+    'default_model': 'RMunshi/vlm-student-thesis',
+    'default_provider': 'local',
     'max_image_res': 800,           # Standard res for layout logic
     'complex_image_res': 1600,      # High-res for tables/detailed crops
     'timeout_seconds': 30,          # SLA for local/cloud VLM calls

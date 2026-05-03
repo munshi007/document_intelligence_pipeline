@@ -22,11 +22,19 @@ def main():
     parser.add_argument("--max-pages", type=int, help="Maximum number of pages to process", default=None)
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
+    parser.add_argument("--complete", help="Run end-to-end (PDF -> MD -> Chunks -> Schema Extraction)", action="store_true")
+    parser.add_argument("--schema", help="Path to JSON schema for extraction", default="schema_sample.json")
+    
     args = parser.parse_args()
     
     input_path = Path(args.pdf_path)
     
-    # Batch directory processing
+    # Modular approach if --complete is set
+    if args.complete:
+        run_complete_pipeline(input_path, args)
+        return
+
+    # Standard / Legacy processing...
     if input_path.is_dir():
         pdf_files = list(input_path.glob("**/*.pdf"))
         logger.info(f"Batch mode: Found {len(pdf_files)} PDFs in {input_path}")
@@ -80,5 +88,38 @@ def print_summary(result: dict, pipeline):
     if result['summary']['pages_with_errors'] > 0:
         print(f"⚠️  Pages with errors: {result['summary']['pages_with_errors']}")
 
+def run_complete_pipeline(pdf_path: Path, args):
+    """Orchestrate the modular tools sequentially."""
+    import subprocess
+    
+    pdf_name = pdf_path.stem[:50]
+    output_dir = f"output/toolkit_{pdf_name}"
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # 1. PDF to Markdown
+    logger.info(">>> Step 1: Running PDF-to-Markdown (tool_pdf2md.py)")
+    cmd1 = [sys.executable, "tool_pdf2md.py", str(pdf_path), "--output_dir", output_dir]
+    if args.debug: cmd1.append("--debug")
+    if args.max_pages: cmd1.extend(["--max_pages", str(args.max_pages)])
+    subprocess.run(cmd1, check=True)
+    
+    # 2. Chunking
+    layout_json = Path(output_dir) / "enhanced_layout_blocks.json"
+    logger.info(">>> Step 2: Running Layout-Aware Chunking (tool_chunker.py)")
+    cmd2 = [sys.executable, "tool_chunker.py", str(layout_json)]
+    subprocess.run(cmd2, check=True)
+    
+    # 3. Extraction
+    chunks_json = Path(output_dir) / "extracted_chunks.json"
+    logger.info(">>> Step 3: Running Schema Extraction (tool_extractor.py)")
+    cmd3 = [sys.executable, "tool_extractor.py", str(chunks_json), "--schema_path", args.schema]
+    subprocess.run(cmd3, check=True)
+    
+    print("\n" + "="*80)
+    print("TOOLKIT COMPLETE: End-to-End processing finished!")
+    print(f"Final Data: {Path(output_dir) / 'final_structured_data.json'}")
+    print("="*80 + "\n")
+
 if __name__ == "__main__":
+    import sys
     main()

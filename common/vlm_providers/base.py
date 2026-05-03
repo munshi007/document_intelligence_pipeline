@@ -21,7 +21,8 @@ class BaseVLMProvider(ABC):
         image: Image.Image, 
         prompt: str, 
         response_model: Type[T],
-        is_complex: bool = False
+        is_complex: bool = False,
+        **kwargs
     ) -> Optional[T]:
         """Execute request and return structured data matching response_model."""
         pass
@@ -31,7 +32,8 @@ class BaseVLMProvider(ABC):
         self,
         image: Image.Image,
         prompt: str,
-        is_complex: bool = False
+        is_complex: bool = False,
+        **kwargs
     ) -> str:
         """Execute request and return raw text/markdown response."""
         pass

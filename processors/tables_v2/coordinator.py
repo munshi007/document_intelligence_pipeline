@@ -155,6 +155,20 @@ class TableCoordinator:
         if result.table_type == TableType.VLM and len(result.cells) > 0:
             print(f"[coordinator] → VLM result detected, overriding coverage QA for structural trust.")
             qa_result.passed = True
+
+        # For complex/ruled tables, allow slight duplication when coverage is very high.
+        # This prevents false negatives from tiny border-overlap assignments.
+        if (
+            not qa_result.passed
+            and result.table_type == TableType.COMPLEX
+            and qa_result.coverage >= 0.95
+            and qa_result.duplication_ratio <= 0.08
+            and qa_result.failure_reasons
+            and all(reason.startswith("duplication=") for reason in qa_result.failure_reasons)
+        ):
+            print("[coordinator] → High-coverage complex table with minor duplication; accepting result.")
+            qa_result.passed = True
+            qa_result.failure_reasons = []
             
         result.qa = qa_result
         print(f"[coordinator] → Coverage: {qa_result.coverage:.1%}")

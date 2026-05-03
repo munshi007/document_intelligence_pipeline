@@ -28,6 +28,9 @@ class TableBboxRefiner:
         line_proximity_threshold: float = 5.0,  # Points
         margin: float = 2.0,  # Points
         min_line_length: float = 20.0,  # Minimum line length to consider
+        min_width_retention: float = 0.78,
+        min_height_retention: float = 0.60,
+        min_area_retention: float = 0.55,
     ):
         """
         Args:
@@ -35,11 +38,17 @@ class TableBboxRefiner:
             line_proximity_threshold: Max distance to snap to a line
             margin: Margin to add after snapping (in points)
             min_line_length: Minimum line length to consider for expansion
+            min_width_retention: Minimum retained width ratio vs initial bbox
+            min_height_retention: Minimum retained height ratio vs initial bbox
+            min_area_retention: Minimum retained area ratio vs initial bbox
         """
         self.word_overlap_threshold = word_overlap_threshold
         self.line_proximity_threshold = line_proximity_threshold
         self.margin = margin
         self.min_line_length = min_line_length
+        self.min_width_retention = min_width_retention
+        self.min_height_retention = min_height_retention
+        self.min_area_retention = min_area_retention
     
     def refine(
         self,
@@ -93,6 +102,9 @@ class TableBboxRefiner:
         
         # Step 4: Add margin
         final_bbox = self._add_margin(snap_bbox)
+
+        # Step 5: Guard against over-shrinking (common in 3-column ruled tables)
+        final_bbox = self._enforce_retention_floor(initial_bbox, final_bbox)
         debug_info["final_bbox"] = final_bbox
         
         logger.debug(
@@ -101,6 +113,39 @@ class TableBboxRefiner:
         )
         
         return final_bbox, debug_info
+
+    def _enforce_retention_floor(
+        self,
+        initial_bbox: BBoxPDF,
+        refined_bbox: BBoxPDF,
+    ) -> BBoxPDF:
+        """Prevent aggressive shrinking that can drop outer table columns."""
+        ix0, iy0, ix1, iy1 = initial_bbox
+        rx0, ry0, rx1, ry1 = refined_bbox
+
+        i_width = max(1e-6, ix1 - ix0)
+        i_height = max(1e-6, iy1 - iy0)
+        r_width = max(1e-6, rx1 - rx0)
+        r_height = max(1e-6, ry1 - ry0)
+
+        width_ratio = r_width / i_width
+        height_ratio = r_height / i_height
+        area_ratio = (r_width * r_height) / (i_width * i_height)
+
+        # If refinement is too aggressive overall, trust detector bbox with margin.
+        if area_ratio < self.min_area_retention:
+            return self._add_margin(initial_bbox)
+
+        # If one dimension shrinks too much, keep refined signal but restore that axis.
+        if width_ratio < self.min_width_retention:
+            rx0 = min(rx0, ix0 - self.margin)
+            rx1 = max(rx1, ix1 + self.margin)
+
+        if height_ratio < self.min_height_retention:
+            ry0 = min(ry0, iy0 - self.margin)
+            ry1 = max(ry1, iy1 + self.margin)
+
+        return (rx0, ry0, rx1, ry1)
     
     def _compute_word_union(self, words) -> BBoxPDF:
         """Compute the tight bounding box containing all words."""

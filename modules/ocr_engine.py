@@ -40,9 +40,41 @@ class OCREngine:
         self.ocr_type = 'pymupdf_native'
         logger.info("OCREngine: Initialized with PyMuPDF Native-First strategy.")
     
+<<<<<<< HEAD
     def is_available(self) -> bool:
         """PyMuPDF is always available if the system is running."""
         return True
+=======
+    def _initialize_ocr(self):
+        """Initialize PaddleOCR reader."""
+        try:
+            if DEPENDENCIES['paddleocr']:
+                logger.info("Initializing PaddleOCR (GPU-Accelerated)...")
+                use_gpu = False
+                if DEPENDENCIES['torch']:
+                    import torch
+                    use_gpu = torch.cuda.is_available()
+                
+                self.ocr_reader = PaddleOCR(
+                    use_angle_cls=OCR_CONFIG['use_angle_cls'],
+                    lang=OCR_CONFIG['lang'],
+                    use_gpu=use_gpu,
+                    ir_optim=True,
+                    show_log=False
+                )
+                self.ocr_type = 'paddle'
+                logger.info(f"PaddleOCR initialized successfully (use_gpu={use_gpu})")
+                return
+            
+            logger.warning("PaddleOCR not available")
+            self.ocr_reader = None
+            self.ocr_type = None
+            
+        except Exception as e:
+            logger.error(f"Error initializing PaddleOCR: {e}")
+            self.ocr_reader = None
+            self.ocr_type = None
+>>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
     
     def is_available(self) -> bool:
         """Check if OCR is available."""
