@@ -14,7 +14,7 @@ from PIL import Image
 from config import OUTPUT_CONFIG
 from processors.region_merger import merge_regions
 from processors.page_processor import PageProcessor as SnapshotProcessor
-from utils.pipeline_utils import save_image
+from utils.pipeline_utils import save_image, assess_text_quality
 
 from pipeline.coordinate_converter import (
     convert_page_to_image,
@@ -23,7 +23,7 @@ from pipeline.coordinate_converter import (
 )
 from pipeline.region_cleaner import cleanup_regions
 from pipeline.visualization_manager import create_debug_visualizations, create_bounding_box_visualization_wrapper
-from common.types import BBox
+from common.types import LayoutRegion, BBox
 
 logger = logging.getLogger(__name__)
 
@@ -36,36 +36,38 @@ class PageProcessor:
     def __init__(self, components: Dict[str, Any], output_paths: Dict[str, Any], debug_mode: bool = False):
         """
         Initialize PageProcessor with shared components and output paths.
+        
+        Args:
+            components: Dictionary of initialized pipeline components (models, processors)
+            output_paths: Dictionary of output paths
+            debug_mode: Whether to enable debug mode
         """
         self.components = components
         self.output_paths = output_paths
         self.debug_mode = debug_mode
         
-        # Unpack directories
+        # Unpack directories for convenience
         self.thumbnails_dir = output_paths['thumbnails']
         self.tables_dir = output_paths['tables']
         self.figures_dir = output_paths['figures']
         self.debug_dir = output_paths['debug']
         
-        # Unpack components
+        # Unpack components for convenience
         self.document_analyzer = components.get('document_analyzer')
         self.layout_detector = components.get('layout_detector')
         self.ocr_engine = components.get('ocr_engine')
         self.reading_order_resolver = components.get('reading_order_resolver')
+        self.semantic_grouper = components.get('semantic_grouper')
         self.figure_caption_processor = components.get('figure_caption_processor')
         self.region_processor = components.get('region_processor')
         self.table_extractor = components.get('table_extractor')
         self.markdown_renderer = components.get('markdown_renderer')
-<<<<<<< HEAD
-        self.snapshot_processor = components.get('page_processor')
-=======
         self.snapshot_processor = components.get('page_processor') # This is the SnapshotProcessor
         self.reading_order_planner = components.get('reading_order_planner')
         self.reading_order_referee = components.get('reading_order_referee')
         self.font_analyzer = components.get('font_analyzer')
         self.layout_refiner = components.get('layout_refiner')
         self.table_anchor_associator = components.get('table_anchor_associator')
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
         self.vlm_client = components.get('vlm_client')
 
     def _compute_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
@@ -140,41 +142,37 @@ class PageProcessor:
         logger.info(f"Processing page {page_num}")
         
         try:
-            # Metadata initialization
+            # Extract page information
             page_info = {
                 "page_num": page_num,
-                "page_size": {"width": page.rect.width, "height": page.rect.height}
+                "page_size": {
+                    "width": page.rect.width,
+                    "height": page.rect.height
+                }
             }
+            
+            # Define standard image metadata
+            pdf_id = Path(current_pdf_path).stem
+            page_id = f"{pdf_id}_p{page_num:03d}"
             vlm_metadata = {
-                "image_id": f"{Path(current_pdf_path).stem}_p{page_num:03d}",
+                "image_id": page_id,
                 "pdf_path": current_pdf_path,
                 "page_num": page_num
             }
             
-            # Convert page to image
+            # Convert page to image for processing
             page_image, dpi_scale = convert_page_to_image(page)
             
-            # Save thumbnail
+            # Save page thumbnail
             thumbnail_path = self.thumbnails_dir / f"page_{page_num:02d}.png"
             save_image(page_image, thumbnail_path, f"page thumbnail: page_{page_num:02d}.png")
             page_info["thumbnail_path"] = f"{OUTPUT_CONFIG['thumbnails_subdir']}/page_{page_num:02d}.png"
             
-            # Step 0: Document Analysis
+            # Step 0: Analyze document to compute adaptive profile
+            logger.info("Analyzing document for adaptive thresholds")
             doc_profile = self.document_analyzer.analyze(page_image)
+            logger.info(f"Document type detected: {doc_profile.document_type.value}")
             
-<<<<<<< HEAD
-            # Step 1: Detect layout regions (RT-DETR Specialist)
-            layout_regions = self.layout_detector.detect_layout_regions(page_image, debug=self.debug_mode)
-            
-            # Step 2: Native Text Extraction (for orphan recovery)
-            text_blocks_pdf = []
-            for i, block in enumerate(page.get_text("blocks")):
-                text_blocks_pdf.append({
-                    "type": "text", "bbox": [block[0], block[1], block[2], block[3]],
-                    "text": block[4], "source": "native_pdf", "confidence": 1.0,
-                    "id": f"native_{page_num}_{i}"
-                })
-=======
             # Step 1: Native Text Extraction (Recovering orphans missed by YOLO)
             logger.info("Extracting native text blocks for orphan recovery (Line-level aware)")
             page_dict = page.get_text("dict")
@@ -258,12 +256,9 @@ class PageProcessor:
                         b_val += 1
             
             # Convert native blocks to image space for hierarchical processing
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
             text_blocks_image = convert_regions_to_image_coords(text_blocks_pdf, dpi_scale)
+            logger.info(f"Extracted {len(text_blocks_image)} native text blocks")
 
-<<<<<<< HEAD
-            # Step 3: Hierarchical Region Processing
-=======
             # Step 2: Detect layout regions using layout models (already in Image Space)
             logger.info("Detecting layout regions with ensemble")
             layout_regions = self.layout_detector.detect_layout_regions(
@@ -340,18 +335,19 @@ class PageProcessor:
             # Step 7 (Pre-Conversion): Process regions hierarchically in IMAGE SPACE
             # This ensures LayoutLMv3 crops are accurate
             logger.info("Processing regions hierarchically with LayoutLMv3 (IMAGE SPACE)")
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
             layout_regions = self.region_processor.process_regions_hierarchically(
-                layout_regions, text_blocks_image, page_image=page_image
+                layout_regions, 
+                text_blocks_image,
+                page_image=page_image
             )
 
-            # Step 4: Figure-Caption Association
-            layout_regions = self.figure_caption_processor.associate_captions(layout_regions, doc_profile)
+            # Step 4: Associate figures with captions (before coordinate conversion)
+            logger.info("Associating figures with captions")
+            layout_regions = self.figure_caption_processor.associate_captions(
+                layout_regions, 
+                doc_profile
+            )
 
-<<<<<<< HEAD
-            # Step 5: Table Extraction (Tables v2 Coordinator)
-            for i, table_region in enumerate([r for r in layout_regions if r.get('type') == 'Table']):
-=======
             # Step 3: Process table regions (smart hybrid: pdfplumber + PaddleOCR)
             table_regions = [r for r in layout_regions if r.get('type') in ['Table', 'table']]
             deduped_table_regions = self._dedupe_table_regions(table_regions)
@@ -365,51 +361,112 @@ class PageProcessor:
                 logger.info(f"Processing table region {i+1} with confidence {table_region.get('confidence', 0):.3f}")
                 
                 # Convert table bbox from image space to PDF space for pdfplumber
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
                 image_bbox = table_region['bbox']
                 pdf_bbox = [coord / dpi_scale for coord in image_bbox]
                 
+                # Pass PDF path for pdfplumber extraction
                 table_data = self.table_extractor.extract_table_structure(
-                    page_image, image_bbox, page_num, i+1,
-                    doc_profile=doc_profile, pdf_path=current_pdf_path,
-                    pdf_page_num=page_num - 1, pdf_bbox=pdf_bbox,
-                    fitz_page=page, vlm_metadata=vlm_metadata
+                    page_image, 
+                    image_bbox,  # Use image bbox for cropping
+                    page_num, 
+                    i+1,
+                    doc_profile=doc_profile,
+                    pdf_path=current_pdf_path,
+                    pdf_page_num=page_num - 1,
+                    pdf_bbox=pdf_bbox,
+                    fitz_page=page,     # Pass the actual PyMuPDF page object required by tables_v2
+                    vlm_metadata=vlm_metadata
                 )
                 table_region['table_data'] = table_data
-                table_region['table_image_path'] = f"table_page_{page_num:02d}_{i+1:02d}.png"
+                
+                # Save table image
+                table_image_name = f"table_page_{page_num:02d}_{i+1:02d}.png"
+                table_region['table_image_path'] = table_image_name
+                logger.info(f"Saved table image: {table_image_name}")
             
-            # Standard visualizations
+            # Step 3.5: Create visualizations BEFORE coordinate conversion
             create_bounding_box_visualization_wrapper(page_image, layout_regions, page_num, self.thumbnails_dir, self.debug_mode)
             
-            # Snapshots
+            # Step 3.6: Attach region snapshots for Figure/Table regions (before coordinate conversion)
             if self.snapshot_processor:
                 layout_regions = self.snapshot_processor.attach_region_snapshots(page_image, layout_regions)
             
-            # Coordinate conversion & Cleanup
+            # Step 5: Convert layout regions from image coordinates to PDF coordinates
+            logger.info("Converting layout regions to PDF coordinate space")
             merged_regions = convert_regions_to_pdf_coords(layout_regions, dpi_scale)
+            
+            # Step 7: (Replaced by Image-Space Step 7 above)
+            logger.info(f"Hierarchical processing completed: {len(merged_regions)} regions")
+            
+            # Merge remaining regions
+            logger.info("Merging processed regions")
+            # We pass empty list for text_blocks here as they are already integrated
             merged_regions = merge_regions(merged_regions, [])
+            
+            # Step 8.5: Final cleanup - sort by Y-coordinate and remove duplicates
+            logger.info("Final cleanup: sorting and deduplication")
             merged_regions = cleanup_regions(merged_regions)
             
-            # Final Native Text Extraction
+            # Step 8.75: Extract text content for regions (Required since we skipped native block extraction)
+            logger.info("Extracting text content from PDF for detected regions (with Quality Check)")
+            
             for r in merged_regions:
-                if not (r.get('text') or '').strip():
+                # If region has no text (most won't), extract it from PDF
+                region_text = r.get('text') or ''
+                if not region_text.strip():
                     bbox = r.get('bbox')
                     if bbox:
                         try:
+                            # Verify bbox validity
                             rect = fitz.Rect(bbox)
-                            r['text'] = page.get_textbox(rect) or page.get_text("text", clip=rect)
-                        except: pass
+                            # Extract text
+                            text_content = page.get_textbox(rect)
+                            
+                            # Fallback if get_textbox returns empty
+                            if not text_content.strip():
+                                text_content = page.get_text("text", clip=rect)
+                            
+                            # --- QUALITY CHECK & REPAIR ---
+                            # Check if text is garbage (PUA characters or gibberish)
+                            is_good_quality = assess_text_quality([{'text': text_content}])
+                            
+                            if not is_good_quality and self.ocr_engine.is_available():
+                                logger.warning(f"Region {r.get('id')} has poor text quality. Attempting OCR repair.")
+                                # Convert PDF bbox to Image bbox
+                                x1, y1, x2, y2 = [int(c * dpi_scale) for c in bbox]
+                                # Clip to image bounds
+                                h, w = page_image.shape[:2]
+                                x1, y1 = max(0, x1), max(0, y1)
+                                x2, y2 = min(w, x2), min(h, y2)
+                                
+                                if x2 > x1 and y2 > y1:
+                                    crop = page_image[y1:y2, x1:x2]
+                                    ocr_result = self.ocr_engine.extract_text_from_image(crop)
+                                    # ocr_result is list of blocks usually? Or text? 
+                                    # Wrapper returns list of dicts. JOIN them.
+                                    repaired_text = " ".join([res.get('text', '') for res in ocr_result])
+                                    
+                                    if repaired_text.strip():
+                                        text_content = repaired_text
+                                        r['source'] = 'ocr_repaired'
+                                        logger.info(f"Repaired text for region {r.get('id')}")
+                            
+                            r['text'] = text_content
+                        except Exception as e:
+                            logger.warning(f"Failed to extract/repair text for region {r.get('id', 'unknown')}: {e}")
 
-            # Reading Order (XY-Cut)
-            merged_regions = self.reading_order_resolver.order_regions(merged_regions, page_image, doc_profile)
+            # Apply Reading Order
+            logger.info("Resolving Reading Order flow...")
+            # 9a: Ask VLM Planner for layout classification
+            layout_prior = None
+            if self.reading_order_planner:
+                logger.info("Asking VLM Planner for layout classification...")
+                layout_prior = self.reading_order_planner.generate_priors(
+                    page_image,
+                    metadata=vlm_metadata
+                )
+                logger.info(f"VLM Planner: layout='{layout_prior.layout_type}', strategy='{layout_prior.suggested_strategy}'")
             
-<<<<<<< HEAD
-            # Markdown Generation
-            self.markdown_renderer.clean_output = not self.debug_mode
-            markdown_content = self.markdown_renderer.extract_markdown_from_regions(merged_regions)
-
-            # Debug visualizations
-=======
             # 9b: Apply deterministic reading order (potentially overridden by VLM strategy)
             logger.info("Applying Final Recursive XY-Cut Reading Order")
             merged_regions = self.reading_order_resolver.order_regions(
@@ -488,14 +545,11 @@ class PageProcessor:
 
             
             # Step 7 (Viz): Create debug visualizations if enabled (using image-space coordinates)
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
             if self.debug_mode:
+                # Convert merged regions back to image space for visualization
                 image_space_regions = convert_regions_to_image_coords(merged_regions, dpi_scale)
                 create_debug_visualizations(page_image, image_space_regions, page_num, self.thumbnails_dir, self.debug_dir, self.debug_mode)
             
-<<<<<<< HEAD
-            # Final Page Result
-=======
             # Aggregate statistics (using counting functions from result_builder - implicitly here using method calls or inline)
             # Actually we can't easily import result_builder here without circular deps if result_builder uses classes from here.
             # But result_builder functions are standalone. We can duplicate the simple counting logic or strict output.
@@ -523,21 +577,25 @@ class PageProcessor:
             })
             
             # Build page result
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
             page_result = {
                 **page_info,
                 "regions": merged_regions,
                 "markdown": markdown_content,
-                "stats": {
-                    "total_regions": len(merged_regions),
-                    "tables_found": len([r for r in layout_regions if r.get('type') == 'Table']),
-                    "figures_found": len([r for r in layout_regions if r.get('type') == 'Figure'])
-                }
+                "stats": stats
             }
             
-            logger.info(f"Page {page_num} processed successfully")
+            logger.info(f"Page {page_num} processed successfully: {len(merged_regions)} total regions")
             return page_result
             
         except Exception as e:
             logger.error(f"Error processing page {page_num}: {e}")
-            return {"page_num": page_num, "error": str(e), "regions": [], "markdown": "", "stats": {}}
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            return {
+                "page_num": page_num,
+                "error": str(e),
+                "regions": [],
+                "markdown": "",
+                "stats": {}
+            }

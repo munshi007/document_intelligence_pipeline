@@ -8,17 +8,11 @@ Facts Extraction. Powered by the Librarian Foundation (Graph + Breadcrumbs).
 import logging
 import json
 import re
-import sys
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Type, TypeVar
 from PIL import Image
 from pydantic import BaseModel
-
-# Ensure langextract is in the path
-LANGEXTRACT_PATH = "/home/rmunshi/PROJECT/langextract"
-if LANGEXTRACT_PATH not in sys.path:
-    sys.path.append(LANGEXTRACT_PATH)
 
 from core.schemas import HierarchicalNode, Extraction, ExtractionResult
 from common.vlm_client import VLMClient
@@ -90,6 +84,14 @@ Focus on technical specifications within the manual:
 4. Capture LED, error code, and diagnostic information.
 5. Note installation steps and configuration parameters.
 """,
+        "Invoice": """
+Focus on invoice fields with line items:
+1. Header: invoice number, date, due date if present.
+2. Parties: buyer (BILL TO / SHIP TO / TO) and seller (FROM / SOLD BY) — extract name + full address.
+3. Items: EVERY line — description, quantity, unit price, line total. Preserve exact strings for descriptions.
+4. Totals: subtotal, tax/VAT lines, shipping, grand total.
+5. Currency: infer from $/€/£/¥ symbols in totals; populate currency field if present in schema.
+""",
         "General": """
 Focus on comprehensive narrative capturing:
 1. Extract all names and organizations in 'Entities'.
@@ -144,7 +146,7 @@ Focus on comprehensive narrative capturing:
             return lines
 
         field_descriptions = describe_recursive(response_model)
-        
+
         field_list = "\n".join(field_descriptions)
         return f"""You are the Visual Librarian and Technical Specialist.
 Extract ONLY the following fields (these are the ONLY fields in the schema):
@@ -155,7 +157,12 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 2. **STRUCTURAL INTEGRITY**: Your response MUST follow the field structure exactly as defined above at the root level.
 3. **NO HALLUCINATED WRAPPERS**: DO NOT wrap these fields in sub-objects like 'identity', 'metadata', or 'data' unless specified in the schema.
 4. **FULL COVERAGE**: Capture EVERY relevant row and data point from technical tables (like pin assignments).
-5. **REASONING**: Briefly explain your extraction logic in the `reasoning_thoughts` field."""
+5. **CURRENCY INFERENCE**: When a `value` (or `amount` / `unit_price` / `total`) field contains a currency symbol, ALSO populate the sibling `currency` field: "$"→"USD", "€"→"EUR", "£"→"GBP", "¥"→"JPY". Keep the symbol in the value.
+6. **REASONING**: Briefly explain your extraction logic in the `reasoning_thoughts` field.
+
+### METADATA FIELDS (always populate when present in schema):
+- `page_references`: list of page numbers (integers) where the extracted facts appeared. The SOURCE CONTENT contains `<!-- page:N -->` markers — read them and include each page you drew evidence from.
+- `source_evidence`: list of `{{text_snippet, page_number, confidence}}` items quoting the exact source text supporting your top extractions. Aim for 3–6 items, each ≤ 200 chars. Skip if the field is not in the schema."""
 
     @staticmethod
     def _append_jsonl(path: Optional[str], payload: Dict[str, Any]) -> None:
@@ -256,6 +263,151 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                     items.append({"description": description, "amount": amount})
         return items
 
+    @staticmethod
+    def _verify_string_spans(
+        record: Any,
+        source_markdown: str,
+        *,
+        threshold: float = 0.85,
+    ) -> Dict[str, Any]:
+        """
+        Verify that string-valued fields in `record` appear in `source_markdown`,
+        and snap them to the closest source span when they don't (e.g. character-
+        level drops produced by the extractor LLM such as 'TIBAANAMA' for
+        'TIBA PANAMA').
+
+        Skips meta/enum/reasoning fields. Returns audit stats:
+          {checked, verified, repaired: [{path, before, after, ratio}],
+           flagged:  [{path, value, best_ratio}],
+           provenance: [{path, snippet, page, ratio}]}
+        `provenance` records the page (from <!-- page:N --> markers in the
+        source markdown) for every verified/repaired field — used by the
+        caller to auto-fill `page_references` and `source_evidence`.
+
+        Mutates `record` in place.
+        """
+        import re
+        import difflib
+
+        SKIP_FIELDS = {
+            "reasoning_thoughts", "confidence_score", "page_references",
+            "domain", "currency", "param_type", "is_high_density",
+        }
+        PAGE_MARKER = re.compile(r"<!--\s*page:(\d+)\s*-->")
+
+        def normalize(s: Any) -> str:
+            if not isinstance(s, str):
+                return ""
+            t = re.sub(r"<!--[^>]*-->", " ", s)
+            t = re.sub(r"\s+", " ", t)
+            return t.lower().strip()
+
+        def find_page_for_span(span: str) -> Optional[int]:
+            """Locate `span` in the ORIGINAL source (case-insensitive) and
+            return the page number from the closest `<!-- page:N -->` marker
+            preceding it."""
+            if not span or not source_markdown:
+                return None
+            try:
+                m = re.search(re.escape(span), source_markdown, re.IGNORECASE)
+            except re.error:
+                return None
+            if not m:
+                return None
+            markers = list(PAGE_MARKER.finditer(source_markdown[: m.start() + 1]))
+            return int(markers[-1].group(1)) if markers else None
+
+        norm_source = normalize(source_markdown or "")
+
+        def fuzzy_find(needle: str) -> tuple:
+            """Return (best_ratio, repaired_str_or_None) for needle vs source."""
+            n = normalize(needle)
+            if len(n) < 3 or not norm_source:
+                return 0.0, None
+            if n in norm_source:
+                return 1.0, None  # already verbatim — no repair needed
+            L = len(n)
+            best_ratio = 0.0
+            best_span = None
+            # Search windows of length L±3 over the source
+            for wl in range(max(3, L - 3), L + 4):
+                if wl > len(norm_source):
+                    continue
+                for i in range(0, len(norm_source) - wl + 1):
+                    cand = norm_source[i:i + wl]
+                    # Cheap pre-filter: at least one common 3-gram
+                    if not any(n[k:k+3] in cand for k in range(0, len(n) - 2, 2)):
+                        continue
+                    ratio = difflib.SequenceMatcher(None, n, cand).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_span = (i, wl)
+                        if ratio == 1.0:
+                            break
+                if best_ratio == 1.0:
+                    break
+            if best_span is None:
+                return best_ratio, None
+            i, wl = best_span
+            # Recover the original-case span from source_markdown via case-insensitive search
+            cand_lower = norm_source[i:i + wl]
+            m = re.search(re.escape(cand_lower), source_markdown or "", re.IGNORECASE)
+            return best_ratio, (m.group(0).strip() if m else cand_lower)
+
+        stats: Dict[str, Any] = {
+            "checked": 0, "verified": 0,
+            "repaired": [], "flagged": [], "provenance": [],
+        }
+
+        def is_candidate(key: str, val: Any) -> bool:
+            if key in SKIP_FIELDS or not isinstance(val, str):
+                return False
+            return len(val.strip()) >= 3
+
+        def record_provenance(path: str, span: str, ratio: float) -> None:
+            page = find_page_for_span(span)
+            if page is not None:
+                stats["provenance"].append({
+                    "path": path,
+                    "snippet": span[:200],
+                    "page": page,
+                    "ratio": round(ratio, 3),
+                })
+
+        def walk(node: Any, path: str = "") -> None:
+            if isinstance(node, dict):
+                for k, v in list(node.items()):
+                    full = f"{path}.{k}" if path else k
+                    if is_candidate(k, v):
+                        stats["checked"] += 1
+                        if normalize(v) in norm_source:
+                            stats["verified"] += 1
+                            record_provenance(full, v, 1.0)
+                        else:
+                            ratio, repaired = fuzzy_find(v)
+                            if (repaired
+                                and ratio >= threshold
+                                and normalize(repaired) != normalize(v)):
+                                node[k] = repaired
+                                stats["repaired"].append({
+                                    "path": full, "before": v,
+                                    "after": repaired, "ratio": round(ratio, 3),
+                                })
+                                record_provenance(full, repaired, ratio)
+                            else:
+                                stats["flagged"].append({
+                                    "path": full, "value": v,
+                                    "best_ratio": round(ratio, 3),
+                                })
+                    else:
+                        walk(v, full)
+            elif isinstance(node, list):
+                for idx, item in enumerate(node):
+                    walk(item, f"{path}[{idx}]")
+
+        walk(record)
+        return stats
+
     def project_to_schema(
         self,
         source_payload: Dict[str, Any],
@@ -338,10 +490,735 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 
         return out
 
+    @staticmethod
+    def _infer_currency_inplace(record: Any) -> int:
+        """
+        Walk a nested dict/list and fill blank `currency` siblings next to
+        a `value` / `amount` / `unit_price` / `total` field that contains
+        a currency symbol. Returns the number of fields filled.
+
+        Pure-Python, idempotent, and only writes when the sibling exists
+        in the schema (does not invent fields).
+        """
+        symbols = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "₹": "INR"}
+        money_fields = ("value", "amount", "unit_price", "total", "price")
+        count = 0
+
+        def walk(node: Any) -> None:
+            nonlocal count
+            if isinstance(node, dict):
+                if "currency" in node and not ExtractorAgent._is_non_empty(node.get("currency")):
+                    for mf in money_fields:
+                        v = node.get(mf)
+                        if v is None:
+                            continue
+                        s = str(v)
+                        for sym, code in symbols.items():
+                            if sym in s:
+                                node["currency"] = code
+                                count += 1
+                                break
+                        if node.get("currency"):
+                            break
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(record)
+        return count
+
+    # ------------------------------------------------------------------
+    # Targeted-retry helpers (post-hoc span extraction)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_path_segments(path: str) -> List[Any]:
+        """
+        Split a verifier-produced path like 'invoice.items[0].description'
+        into ['invoice', 'items', 0, 'description'].
+        """
+        import re
+        segments: List[Any] = []
+        if not path:
+            return segments
+        for part in path.split("."):
+            m = re.match(r"^([^\[\]]*)((?:\[\d+\])*)$", part)
+            if not m:
+                segments.append(part)
+                continue
+            name, idx_chunk = m.group(1), m.group(2)
+            if name:
+                segments.append(name)
+            for idx in re.findall(r"\[(\d+)\]", idx_chunk):
+                segments.append(int(idx))
+        return segments
+
+    @staticmethod
+    def _get_at_path(obj: Any, path: str) -> Any:
+        """Resolve a dotted/indexed path against a nested dict/list. None if any segment misses."""
+        cur = obj
+        for seg in ExtractorAgent._parse_path_segments(path):
+            if cur is None:
+                return None
+            if isinstance(seg, int):
+                if isinstance(cur, list) and 0 <= seg < len(cur):
+                    cur = cur[seg]
+                else:
+                    return None
+            else:
+                if isinstance(cur, dict):
+                    cur = cur.get(seg)
+                else:
+                    return None
+        return cur
+
+    @staticmethod
+    def _set_at_path(obj: Any, path: str, value: Any) -> bool:
+        """
+        Set a value at a dotted/indexed path. Creates intermediate dicts
+        if the parent path contains nulls (so wholly-null sub-objects can
+        be populated). List indices must already exist — we don't grow lists.
+        """
+        segs = ExtractorAgent._parse_path_segments(path)
+        if not segs:
+            return False
+        cur = obj
+        for i, seg in enumerate(segs[:-1]):
+            next_seg = segs[i + 1]
+            if isinstance(seg, int):
+                if not isinstance(cur, list) or not (0 <= seg < len(cur)):
+                    return False
+                cur = cur[seg]
+            else:
+                if not isinstance(cur, dict):
+                    return False
+                if seg not in cur or cur[seg] is None:
+                    cur[seg] = [] if isinstance(next_seg, int) else {}
+                cur = cur[seg]
+        last = segs[-1]
+        if isinstance(last, int):
+            if isinstance(cur, list) and 0 <= last < len(cur):
+                cur[last] = value
+                return True
+            return False
+        if isinstance(cur, dict):
+            cur[last] = value
+            return True
+        return False
+
+    @staticmethod
+    def _unwrap_model_class(annotation: Any) -> Optional[Type[BaseModel]]:
+        """Drill through Optional[X] / Union[X, None] / List[X] to find a BaseModel class, if any."""
+        import typing
+        if annotation is None:
+            return None
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return annotation
+        origin = typing.get_origin(annotation)
+        args = typing.get_args(annotation)
+        if origin in (typing.Union, list):
+            for a in args:
+                if a is type(None):
+                    continue
+                cls = ExtractorAgent._unwrap_model_class(a)
+                if cls is not None:
+                    return cls
+        return None
+
+    @staticmethod
+    def _resolve_field_info(root_model: Type[BaseModel], path: str) -> Optional[Any]:
+        """
+        Walk Pydantic .model_fields by the path segments and return the FieldInfo
+        for the leaf, or None if any segment can't be resolved.
+        """
+        segs = ExtractorAgent._parse_path_segments(path)
+        cur_model = root_model
+        cur_field_info = None
+        for seg in segs:
+            if isinstance(seg, int):
+                # List index — current annotation is List[X]; drill in
+                if cur_field_info is None:
+                    return None
+                cur_model = ExtractorAgent._unwrap_model_class(cur_field_info.annotation)
+                continue
+            if cur_model is None or not hasattr(cur_model, "model_fields"):
+                return None
+            cur_field_info = cur_model.model_fields.get(seg)
+            if cur_field_info is None:
+                return None
+            # Pre-drill: if next segment is also a string, move into sub-model
+            next_model = ExtractorAgent._unwrap_model_class(cur_field_info.annotation)
+            if next_model is not None:
+                cur_model = next_model
+        return cur_field_info
+
+    @staticmethod
+    def _description_for_path(root_model: Type[BaseModel], path: str) -> Optional[str]:
+        fi = ExtractorAgent._resolve_field_info(root_model, path)
+        return getattr(fi, "description", None) if fi is not None else None
+
+    @staticmethod
+    def _type_hint_for_path(root_model: Type[BaseModel], path: str) -> Optional[str]:
+        """Return a short human-readable type tag for the leaf at `path`."""
+        import typing
+        fi = ExtractorAgent._resolve_field_info(root_model, path)
+        if fi is None:
+            return None
+        ann = fi.annotation
+        origin = typing.get_origin(ann)
+        args = typing.get_args(ann)
+        # Unwrap Optional / Union[X, None]
+        if origin is typing.Union:
+            non_none = [a for a in args if a is not type(None)]
+            if len(non_none) == 1:
+                ann = non_none[0]
+        if ann is str:
+            return "string"
+        if ann is int:
+            return "integer"
+        if ann is float:
+            return "number"
+        if ann is bool:
+            return "boolean"
+        return None
+
+    @staticmethod
+    def _anchored_source(
+        source: str,
+        path: str,
+        current_value: Any,
+        window: int = 400,
+        max_chars: int = 12000,
+    ) -> str:
+        """
+        Return a focused slice of `source` around the most likely position of the
+        target value. Strategies, in order:
+          1. If `current_value` is a non-empty string, fuzzy-find its best n-gram
+             match in source and window around that position.
+          2. Otherwise, search for the field-name (last path segment) as a label
+             and window around the first 1–2 matches.
+        Falls back to `source[:max_chars]` if no anchor lands.
+        """
+        full = source or ""
+        if not full:
+            return ""
+        if len(full) <= window * 2:
+            return full[:max_chars]
+
+        field_name = path.split(".")[-1].split("[")[0]
+        positions: List[int] = []
+        src_lower = full.lower()
+
+        # Strategy 1: fuzzy-locate the suspect value
+        if isinstance(current_value, str) and len(current_value.strip()) >= 3:
+            cv = current_value.strip().lower()
+            best_pos, best_overlap = -1, 0
+            seen_pos: set = set()
+            for k in range(0, max(1, len(cv) - 2), max(1, len(cv) // 6)):
+                ngram = cv[k:k + 3]
+                if len(ngram) < 3 or not ngram.strip():
+                    continue
+                start = 0
+                while True:
+                    idx = src_lower.find(ngram, start)
+                    if idx < 0:
+                        break
+                    if idx not in seen_pos:
+                        seen_pos.add(idx)
+                        # Count overlapping 3-grams of cv near this position
+                        window_text = src_lower[max(0, idx - 30): idx + len(cv) + 30]
+                        overlap = sum(
+                            1 for j in range(0, len(cv) - 2)
+                            if cv[j:j + 3] in window_text
+                        )
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_pos = idx
+                    start = idx + 1
+            if best_pos >= 0:
+                positions.append(best_pos)
+
+        # Strategy 2: label search by field name
+        if not positions and len(field_name) >= 2:
+            for pattern in (
+                rf"\b{re.escape(field_name)}\s*[:\-]",
+                rf"\b{re.escape(field_name.replace('_', ' '))}\s*[:\-]",
+                rf"\b{re.escape(field_name)}\b",
+            ):
+                try:
+                    for m in re.finditer(pattern, full, re.IGNORECASE):
+                        positions.append(m.start())
+                        if len(positions) >= 2:
+                            break
+                except re.error:
+                    continue
+                if positions:
+                    break
+
+        if not positions:
+            return full[:max_chars]
+
+        # Concatenate ≤ 3 windows, deduplicated by coarse 100-char bucket
+        seen_bucket: set = set()
+        slices: List[str] = []
+        for pos in sorted(positions)[:3]:
+            start = max(0, pos - window)
+            end = min(len(full), pos + window)
+            bucket = (start // 100, end // 100)
+            if bucket in seen_bucket:
+                continue
+            seen_bucket.add(bucket)
+            slices.append(full[start:end])
+        out = "\n…\n".join(slices) if slices else full[:max_chars]
+        return out[:max_chars]
+
+    @staticmethod
+    def _walk_schema_leaf_strings(
+        model_type: Type[BaseModel],
+        prefix: str = "",
+        _seen: Optional[set] = None,
+    ) -> List[tuple]:
+        """
+        Yield (dotted_path, description) for every leaf-string field in the
+        Pydantic schema tree. Walks into nested BaseModels even if the
+        record value at that point is null — so wholly-null sub-objects
+        still surface their child string fields as candidates.
+
+        Skips: meta fields, list-of-objects (line items are not entity-shaped).
+        """
+        import typing
+        SKIP = {
+            "reasoning_thoughts", "confidence_score", "page_references",
+            "source_evidence", "domain", "param_type", "is_high_density",
+        }
+        if _seen is None:
+            _seen = set()
+        if model_type in _seen or not hasattr(model_type, "model_fields"):
+            return []
+        _seen.add(model_type)
+
+        results: List[tuple] = []
+        for fname, finfo in model_type.model_fields.items():
+            if fname in SKIP:
+                continue
+            ann = finfo.annotation
+            origin = typing.get_origin(ann)
+            args = typing.get_args(ann)
+            # Unwrap Optional / Union[X, None]
+            inner = ann
+            if origin is typing.Union:
+                non_none = [a for a in args if a is not type(None)]
+                if len(non_none) == 1:
+                    inner = non_none[0]
+                    origin = typing.get_origin(inner)
+                    args = typing.get_args(inner)
+            full = f"{prefix}.{fname}" if prefix else fname
+            # Leaf string
+            if inner is str:
+                results.append((full, finfo.description))
+                continue
+            # Nested model
+            sub = ExtractorAgent._unwrap_model_class(inner)
+            if sub is not None and origin is not list:
+                results.extend(ExtractorAgent._walk_schema_leaf_strings(sub, full, _seen))
+            # list-of-objects: skip (line items / parameters — not entity leaves)
+        return results
+
+    # ------------------------------------------------------------------
+    # Targeted-retry core
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_record_for_retry(
+        record: Any,
+        target_path: str,
+        max_chars: int = 2000,
+    ) -> str:
+        """
+        Produce a compact JSON view of the current record with the target
+        path replaced by the sentinel "<TO_FIND>", so the single-field retry
+        prompt can show the model which fields are already filled. Strips
+        bulky metadata (reasoning_thoughts, source_evidence, page_references)
+        and any list fields longer than 2 items (line items, parameters) to
+        keep the prompt small. Purely structural — no schema-specific logic.
+        """
+        import copy
+
+        SENTINEL = "<TO_FIND>"
+        SKIP_KEYS = {
+            "reasoning_thoughts", "source_evidence", "page_references",
+            "confidence_score",
+        }
+
+        def prune(node: Any) -> Any:
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    if k in SKIP_KEYS:
+                        continue
+                    out[k] = prune(v)
+                return out
+            if isinstance(node, list):
+                if len(node) > 2:
+                    return [prune(node[0]), prune(node[1]), f"… +{len(node) - 2} more"]
+                return [prune(item) for item in node]
+            return node
+
+        try:
+            annotated = prune(copy.deepcopy(record))
+        except Exception:
+            annotated = record
+
+        segs = ExtractorAgent._parse_path_segments(target_path)
+        cur = annotated
+        for seg in segs[:-1]:
+            if isinstance(seg, int):
+                if isinstance(cur, list) and 0 <= seg < len(cur):
+                    cur = cur[seg]
+                else:
+                    cur = None
+                    break
+            else:
+                if not isinstance(cur, dict):
+                    cur = None
+                    break
+                if cur.get(seg) is None:
+                    cur[seg] = {}
+                cur = cur[seg]
+
+        if cur is not None and segs:
+            last = segs[-1]
+            if isinstance(last, int):
+                if isinstance(cur, list) and 0 <= last < len(cur):
+                    cur[last] = SENTINEL
+            elif isinstance(cur, dict):
+                cur[last] = SENTINEL
+
+        try:
+            text = json.dumps(annotated, indent=2, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(annotated)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n… (truncated)"
+        return text
+
+    @staticmethod
+    def _clean_retry_response(text: Optional[str]) -> str:
+        """Strip common LLM preambles and quotes; return first non-empty line."""
+        if not text:
+            return ""
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            line = re.sub(
+                r"^\s*(VALUE|ANSWER|RESULT|RESPONSE|OUTPUT)\s*[:\-=]\s*",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            )
+            return line.strip().strip("\"'`").strip()
+        return ""
+
+    @staticmethod
+    def _verify_retry_response(
+        response: str,
+        source_markdown: str,
+        threshold: float = 0.85,
+    ) -> tuple:
+        """
+        Validate retry response against source. Returns (accepted, final_value, detail).
+        - Empty / 'null' / 'none' / 'n/a'  → (False, None, 'model_says_not_present')
+        - Verbatim substring of source     → (True, response, 'verbatim_match')
+        - Fuzzy snap with ratio ≥ threshold → (True, snapped, 'fuzzy_snap_<r>')
+        - Otherwise                        → (False, None, 'not_in_source_<r>')
+        """
+        import difflib
+
+        r = (response or "").strip()
+        if not r or r.lower() in {"null", "none", "n/a", "na", "-"}:
+            return (False, None, "model_says_not_present")
+
+        def normalize(s: str) -> str:
+            t = re.sub(r"<!--[^>]*-->", " ", s or "")
+            t = re.sub(r"\s+", " ", t)
+            return t.lower().strip()
+
+        norm_source = normalize(source_markdown)
+        norm_resp = normalize(r)
+        if len(norm_resp) < 2 or not norm_source:
+            return (False, None, "response_too_short")
+
+        if norm_resp in norm_source:
+            return (True, r, "verbatim_match")
+
+        L = len(norm_resp)
+        best_ratio = 0.0
+        best_span = None
+        for wl in range(max(3, L - 3), L + 4):
+            if wl > len(norm_source):
+                continue
+            for i in range(0, len(norm_source) - wl + 1):
+                cand = norm_source[i:i + wl]
+                if not any(
+                    norm_resp[k:k + 3] in cand
+                    for k in range(0, max(1, len(norm_resp) - 2), 2)
+                ):
+                    continue
+                ratio = difflib.SequenceMatcher(None, norm_resp, cand).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_span = (i, wl)
+                    if ratio == 1.0:
+                        break
+            if best_ratio == 1.0:
+                break
+
+        if best_span and best_ratio >= threshold:
+            i, wl = best_span
+            cand_lower = norm_source[i:i + wl]
+            m = re.search(re.escape(cand_lower), source_markdown or "", re.IGNORECASE)
+            snapped = (m.group(0).strip() if m else cand_lower)
+            return (True, snapped, f"fuzzy_snap_{best_ratio:.2f}")
+
+        # Digit-aware fallback: if the response is digit-heavy (dates, IDs,
+        # codes, phone numbers, etc.), compare digit-strip forms against
+        # contiguous digit-rich spans in source. Catches separator drops
+        # ("20046" → "2020/4/6") that the verbatim/fuzzy passes miss.
+        non_ws = [c for c in r if not c.isspace()]
+        if non_ws:
+            digit_or_sep = sum(1 for c in non_ws if c.isdigit() or c in "-/.,:")
+            if digit_or_sep / len(non_ws) >= 0.6:
+                resp_digits = re.sub(r"\D+", "", r)
+                if len(resp_digits) >= 3:
+                    best_dr = 0.0
+                    best_span_text = None
+                    for sm in re.finditer(r"[\d][\d/\-\.\s,:]{2,}[\d]", source_markdown or ""):
+                        span = sm.group(0).strip()
+                        span_digits = re.sub(r"\D+", "", span)
+                        if not span_digits:
+                            continue
+                        dr = difflib.SequenceMatcher(None, resp_digits, span_digits).ratio()
+                        if dr > best_dr:
+                            best_dr = dr
+                            best_span_text = span
+                            if dr == 1.0:
+                                break
+                    if best_span_text and best_dr >= threshold:
+                        return (True, best_span_text, f"digit_snap_{best_dr:.2f}")
+
+        return (False, None, f"not_in_source_best_ratio_{best_ratio:.2f}")
+
+    def _build_retry_prompt(
+        self,
+        path: str,
+        current_value: Any,
+        description: Optional[str],
+        type_hint: Optional[str],
+        source: str,
+        record_snapshot: Optional[str] = None,
+    ) -> str:
+        field_name = path.split(".")[-1].split("[")[0]
+        parent = ".".join(path.split(".")[:-1]) or "<root>"
+        desc_line = f"DESCRIPTION:   {description}\n" if description else ""
+        type_line = f"TYPE:          {type_hint}\n" if type_hint else ""
+        if current_value is None or (isinstance(current_value, str) and not current_value.strip()):
+            suspect_line = (
+                "CURRENT VALUE: null\n"
+                "HINT:          The previous extraction left this field empty. "
+                "Find it in the source if present (it may be near a label like "
+                f"`{field_name.replace('_', ' ').title()}:` or similar)."
+            )
+        else:
+            suspect_line = (
+                f"SUSPECT VALUE: {current_value}\n"
+                "HINT:          The previous extraction is suspected wrong — "
+                "likely a character-level corruption of a value present in the "
+                "source. Locate a value of the same SHAPE near the suspect "
+                "value's likely position and copy it verbatim."
+            )
+        record_block = ""
+        if record_snapshot:
+            record_block = (
+                "\nCURRENT RECORD (the field you must find is marked `<TO_FIND>` — "
+                "use the rest of the record as context so you don't duplicate a "
+                "neighbouring field's value):\n"
+                f"{record_snapshot}\n"
+            )
+        return f"""You are a forensic data extractor. Find ONE specific value in the source text.
+
+FIELD PATH:    {path}
+FIELD NAME:    {field_name}
+PARENT:        {parent}
+{type_line}{desc_line}{suspect_line}
+{record_block}
+SOURCE (windowed around the likely position):
+{source}
+
+RULES:
+1. COPY THE VALUE VERBATIM from the source. No paraphrasing, no normalisation, no quotes.
+2. Reply with ONLY the value on a single line. No JSON, no preamble.
+3. If the value truly does not appear in the source, reply with exactly: null
+4. Do not repeat a value that already appears for another field in the CURRENT RECORD above — if you would, prefer `null`.
+
+VALUE:
+"""
+
+    def _retry_flagged_and_null_strings(
+        self,
+        record: Dict[str, Any],
+        schema_model: Type[BaseModel],
+        source_markdown: str,
+        grounding_stats: Dict[str, Any],
+        max_retries: int = 5,
+        threshold: float = 0.85,
+    ) -> List[Dict[str, Any]]:
+        """
+        Post-hoc targeted span extraction.
+
+        Two candidate sources, in order:
+          1. `grounding_stats["flagged"]` — values the verifier proved are
+             not in the source (high-confidence repair targets).
+          2. Schema-driven null leaf strings — every leaf-string field in
+             the synthesized schema whose value at that path is null/empty.
+             Walks the Pydantic model tree, not the record, so wholly-null
+             sub-objects still surface their child fields.
+
+        Each candidate triggers one LLM call asking for the verbatim source
+        value. Responses must pass `_verify_retry_response` against the
+        source (verbatim or fuzzy ≥ threshold) — otherwise the original
+        value is left untouched.
+
+        Mutates `record` in place for accepted retries.
+        Returns: list of audit entries.
+        """
+        if not source_markdown:
+            return []
+
+        candidates: List[Dict[str, Any]] = []
+        seen_paths: set = set()
+
+        # 1a. Flagged values (verifier-proven wrong) — highest priority
+        for f in grounding_stats.get("flagged", []) or []:
+            path = f.get("path")
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            candidates.append({
+                "path": path,
+                "current_value": f.get("value"),
+                "reason": "flagged",
+                "description": self._description_for_path(schema_model, path),
+                "type_hint": self._type_hint_for_path(schema_model, path),
+            })
+
+        # 1b. Null leaf strings — walk the SCHEMA so wholly-null parents drill in.
+        # Interleave by top-level container so cap doesn't burn all on one side
+        # (e.g., `from.*` swallowing budget needed for `to.*`).
+        if len(candidates) < max_retries:
+            by_container: Dict[str, List[tuple]] = {}
+            order: List[str] = []
+            for path, description in self._walk_schema_leaf_strings(schema_model):
+                if path in seen_paths:
+                    continue
+                current = self._get_at_path(record, path)
+                if current is None or (isinstance(current, str) and not current.strip()):
+                    parent = ".".join(path.split(".")[:-1]) or "<root>"
+                    if parent not in by_container:
+                        by_container[parent] = []
+                        order.append(parent)
+                    by_container[parent].append((path, description))
+
+            # Round-robin across containers
+            while by_container and len(candidates) < max_retries * 2:
+                progressed = False
+                for parent in list(order):
+                    bucket = by_container.get(parent)
+                    if not bucket:
+                        continue
+                    path, description = bucket.pop(0)
+                    candidates.append({
+                        "path": path,
+                        "current_value": None,
+                        "reason": "null_leaf",
+                        "description": description,
+                        "type_hint": self._type_hint_for_path(schema_model, path),
+                    })
+                    seen_paths.add(path)
+                    if not bucket:
+                        del by_container[parent]
+                    progressed = True
+                    if len(candidates) >= max_retries * 2:
+                        break
+                if not progressed:
+                    break
+
+        candidates = candidates[:max_retries]
+        if not candidates:
+            return []
+
+        audit: List[Dict[str, Any]] = []
+
+        for cand in candidates:
+            prompt_source = self._anchored_source(
+                source=source_markdown,
+                path=cand["path"],
+                current_value=cand["current_value"],
+            )
+            record_snapshot = self._format_record_for_retry(record, cand["path"])
+            prompt = self._build_retry_prompt(
+                path=cand["path"],
+                current_value=cand["current_value"],
+                description=cand.get("description"),
+                type_hint=cand.get("type_hint"),
+                source=prompt_source,
+                record_snapshot=record_snapshot,
+            )
+            try:
+                raw = self.client.generate(image=None, prompt=prompt)
+            except Exception as e:
+                audit.append({
+                    "path": cand["path"],
+                    "reason": cand["reason"],
+                    "before": cand["current_value"],
+                    "retry_response": None,
+                    "after": cand["current_value"],
+                    "accepted": False,
+                    "reason_detail": f"llm_error: {e}",
+                })
+                continue
+
+            cleaned = self._clean_retry_response(raw)
+            accepted, final_value, detail = self._verify_retry_response(
+                cleaned, source_markdown, threshold
+            )
+
+            entry = {
+                "path": cand["path"],
+                "reason": cand["reason"],
+                "before": cand["current_value"],
+                "retry_response": cleaned,
+                "after": cand["current_value"] if not accepted else final_value,
+                "accepted": accepted,
+                "reason_detail": detail,
+            }
+            if accepted:
+                ok = self._set_at_path(record, cand["path"], final_value)
+                if not ok:
+                    entry["accepted"] = False
+                    entry["after"] = cand["current_value"]
+                    entry["reason_detail"] = "set_at_path_failed"
+
+            audit.append(entry)
+
+        return audit
+
     def extract_structured(
-        self, 
-        image: Optional[Image.Image], 
-        prompt: str, 
+        self,
+        image: Optional[Image.Image],
+        prompt: str,
         response_model: Type[T],
         domain: str = "General",
         is_high_density: bool = False,
@@ -558,7 +1435,90 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
             target_schema_json=target_schema_json or response_model.model_json_schema(),
             context_markdown=context_markdown or ""
         )
-        
+
+        # Currency-aware post-extraction normalization
+        currency_filled = self._infer_currency_inplace(refined_dict)
+        if currency_filled:
+            logger.info(f"      [Currency] Inferred {currency_filled} currency code(s) from value symbols.")
+
+        # Verbatim span-grounding: repair character-level extractor defects
+        grounding_stats = self._verify_string_spans(refined_dict, context_markdown or "")
+        for rep in grounding_stats["repaired"]:
+            logger.info(
+                f"      [Grounding] {rep['path']} repaired "
+                f"({rep['ratio']:.2f}): '{rep['before']}' → '{rep['after']}'"
+            )
+        if grounding_stats["flagged"]:
+            logger.info(
+                f"      [Grounding] {len(grounding_stats['flagged'])} field(s) "
+                f"not found in source — flagged for manual review."
+            )
+
+        # Targeted post-hoc retry: ask the model verbatim for each flagged
+        # value and each null leaf-string in the synthesized schema. The
+        # source-verification gate refuses invented values; cap=3 bounds
+        # latency. Original values are preserved when retry doesn't pass.
+        retry_audit = self._retry_flagged_and_null_strings(
+            record=refined_dict,
+            schema_model=response_model,
+            source_markdown=context_markdown or "",
+            grounding_stats=grounding_stats,
+            max_retries=5,
+        )
+        accepted_retries = [r for r in retry_audit if r["accepted"]]
+        for r in accepted_retries:
+            logger.info(
+                f"      [Retry] {r['path']} ({r['reason']}): "
+                f"{r['before']!r} → {r['after']!r} [{r['reason_detail']}]"
+            )
+        for r in retry_audit:
+            if not r["accepted"]:
+                logger.debug(
+                    f"      [Retry] {r['path']} ({r['reason']}): "
+                    f"rejected — {r['reason_detail']}"
+                )
+        if accepted_retries:
+            # Refresh provenance now that previously-empty/wrong fields are filled
+            grounding_stats = self._verify_string_spans(refined_dict, context_markdown or "")
+        grounding_stats["retries"] = retry_audit
+        grounding_stats["retries_attempted"] = len(retry_audit)
+        grounding_stats["retries_accepted"] = len(accepted_retries)
+
+        # Auto-fill page_references / source_evidence from grounding provenance.
+        # We only fill empty fields — the LLM's own answers take priority.
+        provenance = grounding_stats.get("provenance", [])
+        if provenance and isinstance(refined_dict, dict):
+            pages = sorted({
+                p["page"] for p in provenance
+                if isinstance(p.get("page"), int)
+            })
+            if "page_references" in refined_dict and not refined_dict.get("page_references") and pages:
+                refined_dict["page_references"] = pages[:10]
+                logger.info(f"      [Grounding] Auto-filled page_references={pages[:10]} from {len(provenance)} verified spans.")
+            if "source_evidence" in refined_dict and not refined_dict.get("source_evidence"):
+                # Take the top-ratio entries, dedupe by snippet (case-insensitive),
+                # cap at 6 to keep the record compact.
+                seen: set = set()
+                evidence: List[Dict[str, Any]] = []
+                for p in sorted(provenance, key=lambda x: -x.get("ratio", 0)):
+                    snip = (p.get("snippet") or "").strip()
+                    key = snip.lower()
+                    if not snip or key in seen:
+                        continue
+                    seen.add(key)
+                    evidence.append({
+                        "text_snippet": snip[:200],
+                        "page_number": p.get("page"),
+                        "confidence": p.get("ratio", 1.0),
+                    })
+                    if len(evidence) >= 6:
+                        break
+                if evidence:
+                    refined_dict["source_evidence"] = evidence
+                    logger.info(f"      [Grounding] Auto-filled source_evidence with {len(evidence)} item(s).")
+
+        self._last_grounding_stats = grounding_stats
+
         # Convert back to response_model
         master = response_model.model_validate(refined_dict)
 

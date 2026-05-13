@@ -1,28 +1,42 @@
+# Package metadata only. Runtime dependencies are pinned in environment.yml
+# (the single source of truth for reproducibility).
+#
+# To install this project as an editable package after creating the env:
+#   pip install -e .
+
 [project]
-name = "pdf_pipeline"
-version = "2.0.0"
-description = "Professional PDF processing pipeline with layout detection and table extraction"
-requires-python = ">=3.10"
-
-dependencies = [
-    "pymupdf>=1.24.0",
-    "opencv-python>=4.8.0",
-    "numpy>=1.24.0",
-    "paddleocr>=2.7.0",
-    "paddlepaddle",
-    "ultralytics>=8.0.0",
-    "doclayout-yolo",
-    "layoutparser",
-    "torch>=2.0.0",
-    "transformers>=4.30.0",
-    "huggingface-hub",
-    "requests",
-    "Pillow",
+name = "document_intelligence_pipeline"
+version = "3.0.0"
+description = "Schema-conditioned document extraction pipeline with hierarchical knowledge graph and dynamic Pydantic schema synthesis."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Rohan Munshi" },
 ]
+license = { text = "MIT" }
 
-[project.scripts]
-pdf-pipeline = "cli:main"
+# Runtime deps are NOT declared here — see environment.yml for pinned versions.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/munshi007/document_intelligence_pipeline"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["analysis", "models", "output", "processors", "utils"]
-py-modules = ["cli", "pipeline", "config"]
+packages = [
+    "chunker",
+    "common",
+    "config",
+    "converter",
+    "core",
+    "extractor",
+    "modules",
+    "pipeline",
+    "processors",
+    "renderers",
+    "storage",
+    "utils",
+]

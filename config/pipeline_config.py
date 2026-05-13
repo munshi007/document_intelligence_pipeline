@@ -15,8 +15,6 @@ MODEL_CONFIG = {
 
 # Centralized Weights Paths (pointing to the clean 'models/' directory)
 WEIGHTS_CONFIG = {
-    'layout_config': 'weights/publaynet_config.yaml',
-    'layout_weights': 'weights/publaynet_weights.pkl',
     'custom_model': 'models/custom/',
     'table_model': 'models/table/',
     'ocr_model': 'models/ocr/',

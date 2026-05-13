@@ -18,26 +18,30 @@ class ReadingOrderResolver:
         logger.info("ReadingOrderResolver: Initialized with Pure XY-Cut strategy.")
     
     def order_regions(
-        self, 
-        regions: List[Dict[str, Any]], 
+        self,
+        regions: List[Dict[str, Any]],
         page_image: Optional[Any] = None,
-        doc_profile: Optional[Any] = None
+        doc_profile: Optional[Any] = None,
+        strategy_override: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Order regions using Recursive XY-Cut.
+
+        strategy_override: optional VLM Planner hint, e.g. "xy_cut_column_first"
+        to prefer column splits even when the X gap is modest.
         """
         if not regions:
             return []
-            
+
         valid_regions = [r for r in regions if r.get('bbox')]
         if not valid_regions:
             return regions
-            
+
         # Recursive processing
-        ordered_indices = self._recursive_xy_cut(valid_regions)
+        ordered_indices = self._recursive_xy_cut(valid_regions, strategy_override=strategy_override)
         return [valid_regions[i] for i in ordered_indices]
 
-    def _recursive_xy_cut(self, regions: List[Dict[str, Any]], depth: int = 0) -> List[int]:
+    def _recursive_xy_cut(self, regions: List[Dict[str, Any]], depth: int = 0, strategy_override: Optional[str] = None) -> List[int]:
         """
         Recursively cut regions into reading order. Returns list of original indices.
         """
@@ -53,7 +57,10 @@ class ReadingOrderResolver:
         # Otherwise, split Y (rows) first to maintain flow.
         use_x = False
         if split_x and split_y:
-            use_x = (best_x_gap > 35) # Heuristic for clear columns
+            if strategy_override == "xy_cut_column_first" and best_x_gap > 15:
+                use_x = True
+            else:
+                use_x = (best_x_gap > 35) # Heuristic for clear columns
         elif split_x:
             use_x = True
         elif split_y:
@@ -76,8 +83,8 @@ class ReadingOrderResolver:
                 side_b.append((r, i))
         
         # 4. Recurse and Map Indices
-        res_a = self._recursive_xy_cut([x[0] for x in side_a], depth + 1)
-        res_b = self._recursive_xy_cut([x[0] for x in side_b], depth + 1)
+        res_a = self._recursive_xy_cut([x[0] for x in side_a], depth + 1, strategy_override=strategy_override)
+        res_b = self._recursive_xy_cut([x[0] for x in side_b], depth + 1, strategy_override=strategy_override)
         
         return [side_a[i][1] for i in res_a] + [side_b[i][1] for i in res_b]
 

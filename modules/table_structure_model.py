@@ -44,12 +44,14 @@ class TableStructureModel:
             return
 
         try:
-            logger.info("Loading Table Transformer (TATR) structure model...")
+            from common import model_registry
+            spec = model_registry.get("table_transformer")
+            logger.info(f"Loading Table Transformer (TATR) {spec.repo_id}@{spec.revision[:10]}...")
             self.processor = AutoImageProcessor.from_pretrained(
-                "microsoft/table-transformer-structure-recognition-v1.1-all"
+                spec.repo_id, revision=spec.revision
             )
             self.model = TableTransformerForObjectDetection.from_pretrained(
-                "microsoft/table-transformer-structure-recognition-v1.1-all"
+                spec.repo_id, revision=spec.revision
             )
             self.model.to(self.device)
             self.model.eval()

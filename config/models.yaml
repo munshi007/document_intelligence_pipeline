@@ -1,0 +1,61 @@
+# Model asset manifest — single source of truth for every model the pipeline
+# downloads from HuggingFace. Revisions are pinned to the exact SHA used to
+# produce the thesis results; do not "float" to main.
+#
+# Schema:
+#   name:        canonical id used by the loader registry
+#   repo_id:     HuggingFace repository path
+#   revision:    commit SHA (long form) — pin, do not use branch names
+#   kind:        "vision-llm" | "text-llm" | "object-detector" |
+#                "token-classifier" | "table-structure"
+#   filename:    only for single-file repos (DocLayout-YOLO); omit for full
+#                snapshot loads via from_pretrained
+#   approx_size_gb: human-readable warning for bootstrap script
+#   license:     redistribution terms (informational, not enforced)
+#   role:        one-line description of what stage uses it
+
+models:
+
+  - name: vlm_student
+    repo_id: RMunshi/vlm-student-thesis
+    revision: 291cc9f15ccd1b21c8a5c34731060f3c8d58077f
+    kind: vision-llm
+    approx_size_gb: 22.0
+    license: llama-3.2-community
+    role: "Llama-3.2-11B-Vision fine-tune — distilled from GPT-4o-V for document hierarchy recognition (Discovery + layout refinement)."
+
+  - name: librarian_qwen
+    repo_id: RMunshi/librarian-qwen-extractor
+    revision: e89bd466661dff139ec097a422ac5a7e6461159f
+    kind: text-llm
+    approx_size_gb: 15.0
+    license: apache-2.0
+    role: "Qwen2.5-7B fine-tune — schema-constrained JSON extraction (ExtractorAgent + targeted retry path)."
+
+  - name: doclayout_yolo
+    repo_id: juliozhao/DocLayout-YOLO-DocStructBench
+    revision: 8c3299a30b8ff29a1503c4431b035b93220f7b11
+    kind: object-detector
+    filename: doclayout_yolo_docstructbench_imgsz1024.pt
+    approx_size_gb: 0.05
+    license: agpl-3.0
+    role: "DocLayout-YOLO weights — primary block-level layout detector (Title/Text/Figure/Table/etc.)."
+
+  - name: layoutlmv3_base
+    repo_id: microsoft/layoutlmv3-base
+    revision: cfbbbff0762e6aab37086fdd4739ad14fe7d5db4
+    kind: token-classifier
+    approx_size_gb: 0.5
+    license: cc-by-nc-sa-4.0
+    role: "LayoutLMv3 backbone — token-level classifier head for fine-grained text-role labelling."
+
+  - name: table_transformer
+    repo_id: microsoft/table-transformer-structure-recognition-v1.1-all
+    revision: 7587a7ef111d9dcbf8ac695f1376ab7014340a0c
+    kind: table-structure
+    approx_size_gb: 0.4
+    license: mit
+    role: "TATR v1.1 — table cell/row/column structure recognition for complex grids."
+
+# Total approximate download: ~38 GB. First-run will populate
+# $HF_HOME (default ~/.cache/huggingface/hub). Set HF_HOME to override.

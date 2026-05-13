@@ -46,25 +46,45 @@ class LocalTextProvider(BaseVLMProvider):
             
         return model_name
 
+    def _resolve_pinned_revision(self) -> Optional[str]:
+        """If model_path matches the canonical manifest entry, return its pinned
+        revision SHA so we fetch the exact snapshot used for thesis results."""
+        try:
+            from common import model_registry
+            spec = model_registry.get("librarian_qwen")
+            if self.model_path == spec.repo_id:
+                return spec.revision
+        except Exception:
+            pass
+        return None
+
     def _load_model(self):
         """Singleton-style model loader for purely TEXT Unsloth models (like Qwen Specialist)."""
         if LocalTextProvider._model is None or LocalTextProvider._current_path != self.model_path:
             try:
                 from unsloth import FastLanguageModel
                 import os
-                
+
                 is_offline = os.getenv("HF_HUB_OFFLINE") == "1"
                 effective_path = self._resolve_local_path(self.model_path)
-                
-                logger.info(f"Loading TEXT model: {self.model_path} (Offline={is_offline})")
-                
-                LocalTextProvider._model, LocalTextProvider._tokenizer = FastLanguageModel.from_pretrained(
+                pinned_revision = self._resolve_pinned_revision()
+
+                if pinned_revision:
+                    logger.info(f"Loading TEXT model: {self.model_path}@{pinned_revision[:10]} (Offline={is_offline})")
+                else:
+                    logger.info(f"Loading TEXT model: {self.model_path} (Offline={is_offline})")
+
+                load_kwargs = dict(
                     model_name=effective_path,
                     max_seq_length=16384,
                     load_in_4bit=True,
                     device_map="cuda:0",
-                    local_files_only=is_offline
+                    local_files_only=is_offline,
                 )
+                if pinned_revision and not is_offline:
+                    load_kwargs["revision"] = pinned_revision
+
+                LocalTextProvider._model, LocalTextProvider._tokenizer = FastLanguageModel.from_pretrained(**load_kwargs)
                 FastLanguageModel.for_inference(LocalTextProvider._model)
                 LocalTextProvider._current_path = self.model_path
             except Exception as e:

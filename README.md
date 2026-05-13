@@ -9,74 +9,87 @@ This project implements a **VLM Distillation framework** where a "Teacher" model
 
 ---
 
-## 🚀 Out-of-the-Box Hugging Face Integration
+## Reproducibility
 
-This repository is designed to run seamlessly **out-of-the-box**. You do **not** need to manually download massive model weights or configure complex model directories.
+This is a thesis artifact. Reproducibility is treated as a first-class concern: every dependency, every model, every smoke-test document is pinned so that the numbers in the thesis can be regenerated from a clean checkout.
 
-On your first run, the pipeline will automatically download and cache the necessary state-of-the-art models from the Hugging Face Hub:
-1. **Llama-Vision (VLM-Student-Thesis):** For advanced semantic layout refinement.
-2. **Qwen-Extractor (Librarian-Qwen):** For high-precision, JSON-structured technical extraction.
-3. **DocLayout-YOLO:** For structural document layout parsing.
-4. **Table Transformer (TATR):** For complex grid detection.
-
-*Note: If you are running in an air-gapped environment, you can set `export HF_HUB_OFFLINE=1` to force the system to use locally cached snapshots.*
+| Artifact | Role |
+|---|---|
+| `environment.yml` | Pinned Python + CUDA + ML-stack versions (single source of truth for deps). |
+| `config/models.yaml` | HuggingFace asset manifest with revision SHAs — every model is fetched at the exact commit used in the thesis. |
+| `scripts/bootstrap.py` | One-shot preflight + model download + smoke test, writes a `BOOTSTRAP_OK` sentinel summarising the run. |
+| `data/simple_invoice.pdf`, `data/Super_Complex_2.pdf` | Committed smoke-test documents covering Invoice and Logistics domains. |
 
 ---
 
-## 🛠️ Installation & Setup
+## Installation & Setup
 
-**System Requirements:**
-- **OS:** Linux (Ubuntu recommended)
-- **GPU:** NVIDIA GPU with at least 16GB-24GB VRAM (e.g., RTX 3090 / 4090 / A10G)
-- **CUDA:** 12.1 or 12.4 recommended
+**System Requirements**
+- **OS:** Linux (Ubuntu 22.04 recommended)
+- **GPU:** NVIDIA GPU, 24 GB VRAM (tested on RTX 3090, compute capability 8.6)
+- **CUDA:** 12.4 host driver (CUDA toolkit ships via the pinned PyTorch wheel — no separate install needed)
+- **Disk:** ~45 GB free at `$HF_HOME` (default `~/.cache/huggingface`) for the model cache
+- **Conda:** Miniconda or Anaconda installed. If `conda` is not on your `PATH`, install Miniconda from <https://docs.conda.io/en/latest/miniconda.html> first.
 
-**1. Clone the repository:**
+**One-shot setup (three commands)**
+
 ```bash
 git clone https://github.com/munshi007/document_intelligence_pipeline.git
 cd document_intelligence_pipeline
-```
-
-**2. Create a Conda Environment:**
-```bash
-conda create -n silo python=3.12 -y
+conda env create -f environment.yml      # creates an isolated env named "silo"
 conda activate silo
+python scripts/bootstrap.py               # downloads pinned models + smoke tests
 ```
 
-**3. Install Dependencies:**
-```bash
-pip install -r requirements.txt
-```
-*(Note: Unsloth and PyTorch may require specific installation commands depending on your CUDA version. See [Unsloth Installation](https://github.com/unslothai/unsloth) for details if needed).*
+`bootstrap.py` is a one-time setup verifier. It will:
+1. Verify Python, CUDA, and free disk.
+2. Download every model in `config/models.yaml` at its pinned revision (~38 GB, shown with a confirmation prompt; pass `--yes` to skip).
+3. Run the pipeline on both committed smoke PDFs and verify each produces non-empty extractions.
+4. Write `BOOTSTRAP_OK` summarising the run.
+
+If the script exits 0, the repo is reproducibly installed. After that, use `run_v3.py` directly for any document (see Quick Start below). For air-gapped environments, run bootstrap once online, then `export HF_HUB_OFFLINE=1` for subsequent runs.
+
+> **Note:** If the conda env name `silo` collides with an existing env on your machine, override it with `conda env create -f environment.yml -n my_chosen_name` and adjust the `conda activate` line accordingly.
 
 ---
 
-## 📖 Quick Start
+## Quick Start
 
-You can run the pipeline on any PDF. The system will automatically route the document to the correct domain, synthesize a schema, and extract the structured data.
+After bootstrap succeeds, run the pipeline on any PDF. The system auto-discovers the document's domain, synthesises a schema, and emits structured JSON.
 
-### Basic Extraction (Recommended)
-This command automatically discovers the document's domain (e.g., Logistics, Hardware, Invoices) and generates a schema on the fly.
+> **Bring your own documents:** drop any PDF into the `data/` directory (or pass an absolute path) — `data/` is gitignored except for the two committed smoke docs, so your own files stay local and never get committed by accident.
+
+### Basic extraction (recommended)
 ```bash
-python run_v3.py data/sample.pdf \
+python run_v3.py data/simple_invoice.pdf \
     --extract \
     --schema_mode auto \
     --output_dir output/my_run
 ```
 
-### Advanced Usage (Debugging & Custom Schemas)
-Save detailed debug traces (prompts, raw VLM outputs) to see exactly how the AI is reasoning:
+### Following progress live
+The pipeline logs to stderr. To follow progress and keep a transcript, redirect to a file you can `tail -f`:
 ```bash
-python run_v3.py data/sample.pdf \
+python run_v3.py data/simple_invoice.pdf --extract --schema_mode auto \
+    --output_dir output/my_run 2>&1 | tee output/my_run/run.log
+# in another terminal:
+tail -f output/my_run/run.log
+```
+
+### With debug traces
+Saves every batch prompt, raw VLM output, and parse-failure log:
+```bash
+python run_v3.py data/simple_invoice.pdf \
     --extract \
     --schema_mode auto \
     --save_debug_traces \
     --output_dir output/debug_run
 ```
 
-**Force a Custom JSON Schema:**
-If you have a strict data contract you need the document to conform to:
+### With a fixed schema
+If you need the output to conform to a strict pre-defined contract:
 ```bash
-python run_v3.py data/sample.pdf \
+python run_v3.py data/simple_invoice.pdf \
     --extract \
     --schema_mode explicit \
     --schema_path my_custom_schema.json \
@@ -100,39 +113,57 @@ All results are saved in the directory specified by `--output_dir` (default is `
 
 ---
 
-## 🏗️ Project Structure Explained
+## Project Structure
 
-Here is where everything lives in the codebase so you can easily navigate and extend the system:
+Where everything lives in the codebase:
 
 ```text
-document_intelligence_pipeline_original/
-├── run_v3.py                       # MAIN ENTRY POINT: The pipeline orchestrator
-├── config/                         
-│   └── pipeline_config.py          # Central configuration (thresholds, model defaults)
-├── core/                           
-│   └── schemas.py                  # Pydantic base models for the Hierarchical Graph
-├── chunker/
-│   └── graph_builder.py            # Converts physical layouts → Semantic Hierarchical Knowledge Graph
-├── converter/
-│   └── engine.py                   # Handles PDF rendering and coordinates the Vision models
-├── modules/
-│   ├── layout_detector.py          # DocLayout-YOLO implementation
-│   └── table_structure_model.py    # TATR (Table Transformer) implementation
-├── processors/                     
-│   ├── reading_order_planner.py    # AI-driven reading order logic
-│   └── tables_v2/                  # Advanced table routing (Complex vs Simple tables)
-├── extractor/                      
-│   ├── discovery_agent.py          # Zero-shot document scouting (Schema Generation)
-│   ├── agent.py                    # Batched Qwen extractor + additive synthesis
-│   ├── schema_engine.py            # Heuristic routing
-│   └── evaluation.py               # Evaluation metrics generation
+document_intelligence_pipeline/
+├── run_v3.py                       # MAIN ENTRY POINT: pipeline orchestrator
+├── environment.yml                 # Pinned conda env (reproducibility anchor)
+├── pyproject.toml                  # Package metadata (no deps — see environment.yml)
+├── config/
+│   ├── pipeline_config.py          # Runtime thresholds, model defaults
+│   └── models.yaml                 # HuggingFace asset manifest (pinned revision SHAs)
 ├── common/
+│   ├── model_registry.py           # Reads models.yaml → serves (repo_id, revision) to loaders
 │   └── vlm_providers/
-│       └── local_unsloth_provider.py # Unsloth inference layer + JSON hallucination parsing
-└── scripts/
-    ├── eval_harness.py             # Multi-doc evaluation runner for benchmarks
-    └── run_ablation.py             # Script for testing 4-condition ablation studies
+│       ├── local_unsloth_provider.py # Llama VLM inference + JSON hallucination parsing
+│       └── local_text_provider.py    # Qwen text extractor inference
+├── core/
+│   └── schemas.py                  # Pydantic base models for the Hierarchical Graph
+├── converter/
+│   └── engine.py                   # PDF rendering + vision model coordination
+├── chunker/
+│   └── graph_builder.py            # Physical layouts → Semantic Hierarchical Knowledge Graph
+├── modules/
+│   ├── layout_detector.py          # DocLayout-YOLO block-level detector
+│   ├── table_structure_model.py    # Table Transformer (TATR)
+│   └── layoutlm_classifier.py      # LayoutLMv3 token classifier
+├── processors/
+│   ├── reading_order.py            # AI-driven reading order logic
+│   └── tables_v2/                  # Advanced table routing (Complex vs Simple tables)
+├── extractor/
+│   ├── discovery_agent.py          # Zero-shot domain scouting + schema synthesis
+│   ├── agent.py                    # Batched Qwen extractor + retry path + verifier
+│   ├── schema_engine.py            # Heuristic routing
+│   └── evaluation.py               # Scorecard generation (incl. retry stats)
+├── scripts/
+│   ├── bootstrap.py                # One-shot reproducibility verifier (run after env create)
+│   ├── eval_harness.py             # Multi-doc evaluation runner
+│   ├── run_ablation.py             # 4-condition ablation study runner
+│   └── generate_ground_truth.py    # Build GT annotations from your own PDFs
+├── research/                       # Training-side code (the *trained models* live on HF, not here)
+│   ├── distillation_agent.py       # Teacher → Student distillation orchestrator
+│   ├── batch_distill.py            # Batched distillation runs over corpora
+│   └── benchmarks/                 # Small-VLM comparison benchmarks
+├── data/                           # Drop your own PDFs here (gitignored except the two smoke docs)
+│   ├── simple_invoice.pdf          # Smoke-test doc 1 (Invoice domain)
+│   └── Super_Complex_2.pdf         # Smoke-test doc 2 (Logistics domain)
+└── output/                         # Created on first run (gitignored)
 ```
+
+> **Note on training data:** The training corpora (`research/dataset/`), distilled outputs (`research/outputs/`), and the local model snapshots that were merged into the published HF checkpoints (`research/vlm_student_model/`, `research/librarian_qwen_specialist/`) are gitignored. The training scripts themselves ship so the pipeline is auditable end-to-end, but the actual fine-tuned model weights are distributed via Hugging Face (see `config/models.yaml`).
 
 ---
 
@@ -164,9 +195,9 @@ Training was completed with a final loss of **~0.08** over 1000 steps. Full metr
 
 ---
 
-## 🔬 Evaluation & Research Scripts
+## Evaluation & Research Scripts
 
-If you are replicating the thesis benchmarks:
+If you are replicating the thesis benchmarks. Note that `data/ground_truth/` is not shipped in this repo (the source PDFs come from third-party datasets and the annotations carry their licensing). To run these scripts you must either supply your own ground-truth JSONL or regenerate via `scripts/generate_ground_truth.py`.
 
 **Multi-Document Evaluation:**
 ```bash
@@ -188,3 +219,17 @@ python scripts/eval_specialist_vs_teacher.py \
     --ground_truth data/ground_truth/annotations.jsonl \
     --output_dir output/distillation_eval
 ```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `conda: command not found` | Install Miniconda from <https://docs.conda.io/en/latest/miniconda.html> and re-open your shell. |
+| `CondaValueError: prefix already exists` | An env named `silo` already exists. Use `conda env create -f environment.yml -n my_alt_name` and adjust `conda activate` accordingly. |
+| Bootstrap fails at "CUDA not available" | Your NVIDIA driver isn't installed or visible. Verify with `nvidia-smi`. The pipeline can run on CPU but is unusably slow for the VLM. |
+| Out-of-VRAM during smoke test | Models default to 4-bit quantisation but still need ~20 GB VRAM. A smaller GPU will OOM; cloud A10G / 3090 / 4090 / L40S all work. |
+| `OSError: ... is gated` while downloading | Should not happen — all five models are public. If HF changes a model's visibility, run `huggingface-cli login` once. |
+| Smoke test takes >10 minutes per PDF | Expected on first run (model warm-up). Subsequent runs use cached weights and are ~2× faster. |
+| Air-gapped environment | Run `bootstrap.py` once on a machine with network, copy `~/.cache/huggingface` to the air-gapped host, then `export HF_HUB_OFFLINE=1`. |

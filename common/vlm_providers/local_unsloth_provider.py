@@ -47,25 +47,46 @@ class LocalUnslothProvider(BaseVLMProvider):
             
         return model_name
 
+    def _resolve_pinned_revision(self) -> Optional[str]:
+        """If model_path matches the canonical manifest entry, return its pinned
+        revision SHA so we fetch the exact snapshot used for thesis results.
+        Returns None for user overrides or unrecognised repos."""
+        try:
+            from common import model_registry
+            spec = model_registry.get("vlm_student")
+            if self.model_path == spec.repo_id:
+                return spec.revision
+        except Exception:
+            pass
+        return None
+
     def _load_model(self):
         """Singleton-style model loader for Unsloth models."""
         if LocalUnslothProvider._model is None or LocalUnslothProvider._current_path != self.model_path:
             try:
                 from unsloth import FastVisionModel
                 import os
-                
+
                 is_offline = os.getenv("HF_HUB_OFFLINE") == "1"
                 effective_path = self._resolve_local_path(self.model_path)
-                
-                logger.info(f"Loading VLM: {self.model_path} (Offline={is_offline})")
-                
-                LocalUnslothProvider._model, LocalUnslothProvider._tokenizer = FastVisionModel.from_pretrained(
+                pinned_revision = self._resolve_pinned_revision()
+
+                if pinned_revision:
+                    logger.info(f"Loading VLM: {self.model_path}@{pinned_revision[:10]} (Offline={is_offline})")
+                else:
+                    logger.info(f"Loading VLM: {self.model_path} (Offline={is_offline})")
+
+                load_kwargs = dict(
                     model_name=effective_path,
                     load_in_4bit=True,
                     device_map="cuda:0",
                     trust_remote_code=True,
-                    local_files_only=is_offline  # CRITICAL: Force local load if offline
+                    local_files_only=is_offline,  # CRITICAL: Force local load if offline
                 )
+                if pinned_revision and not is_offline:
+                    load_kwargs["revision"] = pinned_revision
+
+                LocalUnslothProvider._model, LocalUnslothProvider._tokenizer = FastVisionModel.from_pretrained(**load_kwargs)
                 FastVisionModel.for_inference(LocalUnslothProvider._model)
                 LocalUnslothProvider._current_path = self.model_path
             except Exception as e:
@@ -281,35 +302,6 @@ Now, output the FINAL JSON following the EXACT pattern above:"""
         is_complex: bool = False,
         **kwargs
     ) -> str:
-<<<<<<< HEAD
-        if LocalUnslothProvider._model is None:
-            return "Error: Local model not initialized"
-
-        try:
-            # Consistent with generate_structured loop
-            messages = [
-                {"role": "user", "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt}
-                ]}
-            ]
-            
-            input_text = LocalUnslothProvider._tokenizer.apply_chat_template(
-                messages, 
-                add_generation_prompt=True
-            )
-            
-            inputs = LocalUnslothProvider._tokenizer(
-                image, 
-                input_text, 
-                add_special_tokens=False, 
-                return_tensors="pt"
-            ).to("cuda")
-
-            outputs = LocalUnslothProvider._model.generate(
-                **inputs,
-                max_new_tokens=4096,
-=======
         if LocalUnslothProvider._model is None or LocalUnslothProvider._tokenizer is None:
             return "Error: Local model not initialized"
 
@@ -340,17 +332,9 @@ Now, output the FINAL JSON following the EXACT pattern above:"""
             output = LocalUnslothProvider._model.generate(
                 **inputs, 
                 max_new_tokens=max_tokens,
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
                 use_cache=True,
-                temperature=0.1,
                 do_sample=False
             )
-<<<<<<< HEAD
-            
-            # Use tokenizer for decoding
-            result = LocalUnslothProvider._tokenizer.decode(outputs[0], skip_special_tokens=True)
-            return result.strip()
-=======
 
             # Safely decode and remove the prompt from the response
             full_text = LocalUnslothProvider._tokenizer.decode(output[0], skip_special_tokens=True)
@@ -358,7 +342,6 @@ Now, output the FINAL JSON following the EXACT pattern above:"""
             if prompt in full_text:
                 return full_text.split(prompt)[-1].strip()
             return full_text.strip()
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
             
         except Exception as e:
             logger.error(f"Local Unsloth Provider Error: {e}")

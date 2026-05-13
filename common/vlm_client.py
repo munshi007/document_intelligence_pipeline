@@ -6,8 +6,16 @@ from PIL import Image
 import pydantic
 from dotenv import load_dotenv
 
+from .vlm_providers.openai_provider import OpenAIProvider
+from .vlm_providers.anthropic_provider import AnthropicProvider
 from .vlm_providers.local_unsloth_provider import LocalUnslothProvider
 from .vlm_providers.local_text_provider import LocalTextProvider
+
+# Optional provider (not required for local pipeline)
+try:
+    from .vlm_providers.ollama_provider import OllamaProvider
+except ImportError:
+    OllamaProvider = None
 from config import VLM_CONFIG
 
 # Load environment variables from .env if present
@@ -24,14 +32,10 @@ class VLMClient:
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        # Finalized Production Model Defaults
-        self.model = self.config.get('model', 'models/custom')
-        self.provider_name = 'local'
+        self.model = self.config.get('model', 'qwen2.5-vl:7b')
+        self.provider_name = self.config.get('provider')
         self.observer = None
         
-<<<<<<< HEAD
-        # Initialize the specific provider adapter
-=======
         # 1. Auto-detect provider if not explicitly given
         if not self.provider_name:
             if self.model.startswith(('gpt-', 'o1-', 'o3-')):
@@ -50,11 +54,10 @@ class VLMClient:
         self.api_key = self._get_api_key()
         
         # 3. Initialize the specific provider adapter
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
         try:
-            self.provider = LocalUnslothProvider(self.model)
+            self.provider = self._init_provider()
         except Exception as e:
-            logger.error(f"Failed to initialize Local Specialist VLM: {e}")
+            logger.error(f"Failed to initialize VLM provider '{self.provider_name}': {e}")
             self.provider = None
         
         # Global configuration
@@ -62,12 +65,13 @@ class VLMClient:
         self.complex_res = self.config.get('complex_res', VLM_CONFIG['complex_image_res'])
 
     def _get_api_key(self) -> Optional[str]:
+        if self.provider_name == 'openai':
+            return os.getenv("OPENAI_API_KEY")
+        elif self.provider_name == 'anthropic':
+            return os.getenv("ANTHROPIC_API_KEY")
         return None
 
     def _init_provider(self):
-<<<<<<< HEAD
-        return LocalUnslothProvider(self.model)
-=======
         kwargs = {"timeout": self.config.get('timeout', VLM_CONFIG['timeout_seconds'])}
         
         if self.provider_name == 'openai':
@@ -82,7 +86,6 @@ class VLMClient:
             return LocalTextProvider(self.model, **kwargs)
         else:
             raise ValueError(f"Unsupported VLM provider: {self.provider_name}")
->>>>>>> 49e79bc (docs: update README with detailed instructions and benchmarks; chore: finalize v3 pipeline)
 
     def _optimize_for_detail(self, image: Any, is_complex: bool = False) -> Optional[Image.Image]:
         if image is None:

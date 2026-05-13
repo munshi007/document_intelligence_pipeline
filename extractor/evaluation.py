@@ -69,6 +69,68 @@ def _required_field_stats(payload: Dict[str, Any], schema_json: Dict[str, Any]) 
     }
 
 
+def _get_nested(obj: Any, path: str) -> Any:
+    """
+    Resolve a dotted path against a possibly-nested dict/list.
+    Numeric segments index into lists, e.g. 'charges.0.value'.
+    Returns None if any segment misses.
+    """
+    if obj is None or not path:
+        return None
+    cur = obj
+    for part in path.split("."):
+        if cur is None:
+            return None
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError, TypeError):
+                return None
+        else:
+            return None
+    return cur
+
+
+def _matches_gt(gt_val: Any, ext_val_raw: Any) -> bool:
+    """
+    Lenient substring match. Three GT-value flavours are supported:
+
+      • str / number / bool : case-insensitive substring (either direction).
+      • list[str]           : every expected substring must appear somewhere
+                              in the stringified extraction at that path
+                              (good for asserting "these line items exist").
+      • dict                : same as str — stringify and substring-match.
+
+    FieldValue envelopes ({raw_value, normalized_value, ...}) are unwrapped.
+    """
+    if isinstance(ext_val_raw, dict) and (
+        "normalized_value" in ext_val_raw or "raw_value" in ext_val_raw
+    ):
+        ext_str = str(
+            ext_val_raw.get("normalized_value") or ext_val_raw.get("raw_value") or ""
+        ).lower().strip()
+    else:
+        ext_str = str(ext_val_raw or "").lower().strip()
+
+    if not ext_str:
+        return False
+
+    if isinstance(gt_val, list):
+        if not gt_val:
+            return False
+        return all(
+            str(item).lower().strip() in ext_str
+            for item in gt_val if str(item).strip()
+        )
+
+    gt_str = str(gt_val).lower().strip()
+    if not gt_str:
+        return False
+    return gt_str in ext_str or ext_str in gt_str
+
+
 def _compute_gt_metrics(
     extraction: Dict[str, Any],
     ground_truth: Dict[str, Any],
@@ -76,32 +138,32 @@ def _compute_gt_metrics(
     """
     Compare extraction output against a ground-truth annotation dict.
 
-    Matching is lenient: a field is 'correct' when the GT value is a
-    case-insensitive substring of the extracted value (or vice versa).
-    This handles minor formatting differences without requiring exact match.
+    Accepted GT shapes:
+      • Flat field map:               {"quote_no": "1922895", ...}
+      • Wrapped per project README:   {"doc_id": ..., "fields": {...}}
 
-    Handles FieldValue envelopes (dicts with raw_value/normalized_value)
-    transparently.
+    GT keys may be dotted paths into the extraction tree, e.g.
+    'quote_identity.quote_no' or 'charges.0.description'. List-valued GT
+    entries assert that every expected substring shows up at that path.
+
+    Precision denominator: count of *top-level* populated extraction fields
+    (a coarse but stable signal); recall denominator: count of GT entries.
     """
     if not ground_truth:
         return {}
+
+    # Unwrap project-convention envelope.
+    if isinstance(ground_truth.get("fields"), dict):
+        ground_truth = ground_truth["fields"]
 
     gt_fields = set(ground_truth.keys())
     ext_fields = set(k for k, v in extraction.items() if not _is_empty_value(v))
 
     matched: List[str] = []
     for field in gt_fields:
-        gt_val = str(ground_truth.get(field, "")).lower().strip()
-        raw_ext = extraction.get(field)
-        # Unwrap FieldValue envelope if present
-        if isinstance(raw_ext, dict) and ("normalized_value" in raw_ext or "raw_value" in raw_ext):
-            ext_val = str(
-                raw_ext.get("normalized_value") or raw_ext.get("raw_value") or ""
-            ).lower().strip()
-        else:
-            ext_val = str(raw_ext or "").lower().strip()
-
-        if gt_val and ext_val and (gt_val in ext_val or ext_val in gt_val):
+        gt_val = ground_truth.get(field)
+        raw_ext = _get_nested(extraction, field)
+        if _matches_gt(gt_val, raw_ext):
             matched.append(field)
 
     n_matched = len(matched)
@@ -116,9 +178,9 @@ def _compute_gt_metrics(
         "gt_field_precision": round(precision, 4),
         "gt_field_recall": round(recall, 4),
         "gt_field_f1": round(f1, 4),
-        "matched_fields": matched,
+        "matched_fields": sorted(matched),
         "missing_fields": sorted(gt_fields - set(matched)),
-        "extra_fields": sorted(ext_fields - gt_fields),
+        "extra_fields": sorted(ext_fields - {f.split(".")[0] for f in gt_fields}),
     }
 
 
@@ -144,6 +206,7 @@ def evaluate_extraction(
     doc_stem: str,
     trace_dir: str | None = None,
     ground_truth: Optional[Dict[str, Any]] = None,
+    grounding_stats: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compute a single-run extraction scorecard."""
 
@@ -174,8 +237,13 @@ def evaluate_extraction(
     non_empty_extraction_rate = 1.0 if (not failed and populated > 0) else 0.0
 
     # 4. Grounded reference rate (single-doc run => 0 or 1)
+    # Satisfied by either page_references[] (any page cited) or
+    # source_evidence[] (any text snippet supplied with provenance).
     page_refs = data_payload.get("page_references", []) if isinstance(data_payload, dict) else []
-    grounded_reference_rate = 1.0 if isinstance(page_refs, list) and len(page_refs) > 0 else 0.0
+    evidence = data_payload.get("source_evidence", []) if isinstance(data_payload, dict) else []
+    has_refs = isinstance(page_refs, list) and len(page_refs) > 0
+    has_evidence = isinstance(evidence, list) and len(evidence) > 0
+    grounded_reference_rate = 1.0 if (has_refs or has_evidence) else 0.0
 
     # 5. Retry frequency
     retry_frequency = 0.0
@@ -186,6 +254,16 @@ def evaluate_extraction(
         parse_failure_count = len(entries)
         total_batches = body.get("total_batches") or 1
         retry_frequency = round(parse_failure_count / max(int(total_batches), 1), 4)
+
+    # Optional grounding-retry stats (post-hoc targeted span extraction)
+    grounding_retry_block: Dict[str, Any] = {}
+    if isinstance(grounding_stats, dict):
+        attempted = grounding_stats.get("retries_attempted", 0) or 0
+        accepted = grounding_stats.get("retries_accepted", 0) or 0
+        grounding_retry_block = {
+            "grounding_retries_attempted": int(attempted),
+            "grounding_retries_accepted": int(accepted),
+        }
 
     return {
         "doc": doc_stem,
@@ -199,5 +277,6 @@ def evaluate_extraction(
         "required_total": required_stats["required_total"],
         "required_missing": required_stats["required_missing"],
         "parse_failure_count": parse_failure_count,
+        **grounding_retry_block,
         **(_compute_gt_metrics(data_payload, ground_truth) if ground_truth and not failed else {}),
     }
