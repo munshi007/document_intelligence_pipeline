@@ -1519,6 +1519,21 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
 
         self._last_grounding_stats = grounding_stats
 
+        # Scrub PydanticUndefined sentinels — these can leak from sub-models
+        # built via model_construct() during batch merging (when a leaf field
+        # has no default and wasn't populated). Pydantic 2 refuses to validate
+        # a dict containing them; coerce to None so Optional fields pass.
+        from pydantic_core import PydanticUndefined as _PU
+        def _scrub(o):
+            if o is _PU:
+                return None
+            if isinstance(o, dict):
+                return {k: _scrub(v) for k, v in o.items() if v is not _PU}
+            if isinstance(o, list):
+                return [_scrub(v) for v in o if v is not _PU]
+            return o
+        refined_dict = _scrub(refined_dict)
+
         # Convert back to response_model
         master = response_model.model_validate(refined_dict)
 
@@ -1643,9 +1658,14 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
 
 
 
-        # 4. Use VLM to generate a cohesive SUMMARY from the collected findings
+        # 4. Use VLM to generate a cohesive SUMMARY from the collected findings.
+        # default=str in json.dumps below makes the dump robust against
+        # PydanticUndefined sentinels that can leak when a sub-model was
+        # constructed via model_construct() during batch merging without
+        # touching every leaf field. (mode="json" can't be used here because
+        # pydantic 2's own json encoder also refuses PydanticUndefined.)
         combined_json = master.model_dump()
-        distill_prompt = f"""You are a High-Precision Librarian Specialist. 
+        distill_prompt = f"""You are a High-Precision Librarian Specialist.
 Your goal is to extract structured data into a {response_model.__name__} schema.
 
 STRICT RULES:
@@ -1658,7 +1678,7 @@ SPECIALIST HINTS:
 {self.SPECIALIST_HINTS.get(domain, f"Thoroughly extract all properties relevant to a {domain} document.")}
 
 SOURCE CONTENT:
-{json.dumps(combined_json, indent=2)}
+{json.dumps(combined_json, indent=2, default=str)}
 
 ### COLLECTED BATCH THOUGHTS:
 {chr(10).join(all_reasoning)}

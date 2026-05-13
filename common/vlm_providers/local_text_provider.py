@@ -500,13 +500,17 @@ class LocalTextProvider(BaseVLMProvider):
         ).to("cuda")
 
         with torch.inference_mode():
-            # repetition_penalty=1.15 + no_repeat_ngram_size=8 guard against
-            # the degenerate-loop failure where Qwen on long technical docs
-            # gets stuck repeating a parameter row (e.g. "Operating voltage"
-            # / "Current consumption" alternating) until max_new_tokens
-            # is exhausted and the JSON is truncated mid-value. The ngram
-            # size is set large enough that legitimate JSON field-name
-            # repetition (e.g. {"name": ...}) is not blocked.
+            # repetition_penalty=1.15 guards against the degenerate-loop
+            # failure on long technical docs (e.g. Table_Test_1.pdf, where
+            # Qwen got stuck alternating "Operating voltage" and "Current
+            # consumption" entries until max_new_tokens was exhausted).
+            # Initial fix also added no_repeat_ngram_size=8 but that turned
+            # out too aggressive: docs with many similar nested objects
+            # (e.g. Super_Complex_2.pdf with 3 connector dicts sharing the
+            # same field layout) had the n-gram block prevent legitimate
+            # `"name": "..."` -> `"type": "..."` sibling-key sequences,
+            # producing malformed double-colon output. Penalty alone is
+            # sufficient.
             outputs = LocalTextProvider._model.generate(
                 input_ids=inputs,
                 max_new_tokens=max_tokens,
@@ -515,7 +519,6 @@ class LocalTextProvider(BaseVLMProvider):
                 temperature=0.1,
                 do_sample=False,
                 repetition_penalty=1.15,
-                no_repeat_ngram_size=8,
             )
         prompt_len = inputs.shape[-1]
         generated = outputs[0][prompt_len:]
