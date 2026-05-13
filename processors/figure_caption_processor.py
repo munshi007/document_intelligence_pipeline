@@ -43,7 +43,11 @@ class FigureCaptionProcessor:
         for caption in captions:
             parent = self._find_nearest_parent(caption, figures + tables)
             if parent:
-                parent['caption'] = (parent.get('caption', '') + " " + (caption.get('text', ''))).strip()
+                # dict.get returns None when the key exists with value None — the
+                # default only fires for missing keys. Use `or ''` to defend.
+                existing = parent.get('caption') or ''
+                new_text = caption.get('text') or ''
+                parent['caption'] = (existing + " " + new_text).strip()
                 parent['caption_bbox'] = caption.get('bbox')
                 caption['associated_with'] = parent.get('region_id')
 
