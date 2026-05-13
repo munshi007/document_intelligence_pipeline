@@ -161,10 +161,15 @@ class LocalTextProvider(BaseVLMProvider):
 
             # C. Atomic Repair for Hallucinated Escapes, Trailing Commas & Truncation
             # Common model bugs: \U for capital degrees, \u without digits, trailing commas, etc.
-            candidate = re.sub(r'\\U', 'U', candidate) 
+            candidate = re.sub(r'\\U', 'U', candidate)
             candidate = re.sub(r'\\(?!(u[0-9a-fA-F]{4}|["\\/bfnrt]))', ' ', candidate)
             # Fix trailing commas: {"key": value, } -> {"key": value }
             candidate = re.sub(r',\s*([\]}])', r'\1', candidate)
+            # Fix mixed-quote keys: "currency': "USD"  ->  "currency": "USD"
+            # Observed on Qwen logistics extractions; one mistyped char on a
+            # 6-charge JSON kills the whole parse. Only touches keys (chars
+            # before `:`), so apostrophes inside string values are safe.
+            candidate = re.sub(r'"([^"\n]+?)\'(\s*:)', r'"\1"\2', candidate)
 
             # Fix truncation: If it ends in a comma or a key/value, attempt to close it
             if not candidate.strip().endswith(('}', ']')):

@@ -667,6 +667,14 @@ Respond ONLY with a JSON object in exactly this shape:
                 # Recursive Case: Array
                 elif prop_type == "array" and "items" in prop_info:
                     items = prop_info.get("items", {})
+                    # JSON Schema's `items` may be a single schema (the common
+                    # case) or a list of schemas (the rare tuple form). When
+                    # the LLM emits a tuple-form array, coerce to the first
+                    # entry rather than crashing on `.get()`.
+                    if isinstance(items, list):
+                        items = items[0] if items else {}
+                    if not isinstance(items, dict):
+                        items = {}
                     if items.get("type") == "object":
                         typed_block = _match_typed_block(items)
                         if typed_block is not None:
