@@ -26,7 +26,6 @@ DEPENDENCIES = {
     'doclayout_yolo': False,
     'torch': False,
     'ultralytics': False,
-    'layoutparser': False
 }
 
 try:
@@ -50,12 +49,6 @@ try:
     DEPENDENCIES['ultralytics'] = True
 except ImportError:
     logger.warning("Ultralytics YOLO not available")
-
-try:
-    import layoutparser as lp
-    DEPENDENCIES['layoutparser'] = True
-except ImportError:
-    logger.warning("LayoutParser not available")
 
 class LayoutDetector:
     """Advanced layout detection using DocLayout-YOLO with VLM semantic refinement."""
@@ -184,90 +177,12 @@ class LayoutDetector:
         logger.warning("No layout models available, using fallback detection")
         return self._fallback_layout_detection(page_image)
     
-    def detect_with_ensemble(self, page_image: np.ndarray, debug: bool = True) -> List[Dict[str, Any]]:
-        """
-        Detect layout regions using ensemble of YOLO and LayoutParser models.
-        
-        Args:
-            page_image: Input page image as numpy array
-            debug: Enable debug logging
-            
-        Returns:
-            List of detected regions from ensemble
-        """
-        logger.info("Starting ensemble layout detection")
-        
-        all_detections = []
-        
-        # Run YOLO detection
-        if self.layout_model is not None:
-            try:
-                logger.info("Running YOLO detection...")
-                yolo_detections = self._detect_with_yolo(page_image, debug)
-                all_detections.extend(yolo_detections)
-                logger.info(f"YOLO detected {len(yolo_detections)} regions")
-            except Exception as e:
-                logger.error(f"YOLO detection failed: {e}")
-        
-        # Run LayoutParser detection
-        if self.layoutparser_model is not None:
-            try:
-                logger.info("Running LayoutParser detection...")
-                lp_detections = self._detect_with_layoutparser(page_image, debug)
-                all_detections.extend(lp_detections)
-                logger.info(f"LayoutParser detected {len(lp_detections)} regions")
-            except Exception as e:
-                logger.error(f"LayoutParser detection failed: {e}")
-        
-        if not all_detections:
-            logger.warning("No detections from ensemble models, using fallback")
-            return self._fallback_layout_detection(page_image)
-        
-        logger.info(f"Ensemble collected {len(all_detections)} total detections")
-        return all_detections
-    
     def _detect_with_yolo(self, page_image: np.ndarray, debug: bool = False) -> List[Dict[str, Any]]:
         """Run YOLO detection and return regions."""
         detection_image, scale_info = self._prepare_image_for_detection(page_image, debug)
         results = self.layout_model.predict(detection_image, imgsz=DOCLAYOUT_CONFIG['target_size'], verbose=False)
         return self._process_detection_results(results, scale_info, page_image.shape, debug)
-    
-    def _detect_with_layoutparser(self, page_image: np.ndarray, debug: bool = False) -> List[Dict[str, Any]]:
-        """Run LayoutParser detection and return regions."""
-        # LayoutParser expects RGB image
-        if len(page_image.shape) == 2:
-            page_image = cv2.cvtColor(page_image, cv2.COLOR_GRAY2RGB)
-        elif page_image.shape[2] == 4:
-            page_image = cv2.cvtColor(page_image, cv2.COLOR_RGBA2RGB)
-        
-        # Run detection
-        layout = self.layoutparser_model.detect(page_image)
-        
-        for i, block in enumerate(layout):
-            x1, y1, x2, y2 = block.coordinates
-            region_type = block.type if hasattr(block, 'type') else 'text'
-            confidence = block.score if hasattr(block, 'score') else 0.5
-            
-            # Standardize label to Title Case
-            if region_type.lower() == 'text':
-                region_type = 'Text'
-            elif 'caption' in region_type.lower():
-                region_type = 'Caption'
-            else:
-                region_type = region_type.title()
-                
-            region = {
-                "type": region_type,
-                "bbox": [float(x1), float(y1), float(x2), float(y2)],
-                "source": "layout_model", # Standardize source for ensemble merging
-                "confidence": float(confidence),
-                "region_id": f"lp_{i}",
-                "model": "layoutparser"
-            }
-            regions.append(region)
-        
-        return regions
-    
+
     def _refine_with_vlm(self, page_image: np.ndarray, yolo_regions: List[Dict[str, Any]], debug: bool = False) -> List[Dict[str, Any]]:
         """
         Refine YOLO detections using custom fine-tuned VLM for semantic consistency.
