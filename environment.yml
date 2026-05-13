@@ -45,7 +45,10 @@ dependencies:
       - unsloth-zoo==2026.3.2
 
       # Layout / document analysis stack.
-      - paddleocr==2.9.1
+      # paddleocr bumped 2.9.1 -> 2.10.0: 2.9.1 pins albumentations==1.4.10,
+      # which conflicts with doclayout-yolo 0.0.4's albumentations>=1.4.11.
+      # 2.10.0 drops the strict pin while keeping the same public PaddleOCR API.
+      - paddleocr==2.10.0
       - paddlepaddle==2.6.2
       - doclayout-yolo==0.0.4
       - ultralytics==8.4.5
