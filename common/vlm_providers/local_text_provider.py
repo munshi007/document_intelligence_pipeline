@@ -495,6 +495,13 @@ class LocalTextProvider(BaseVLMProvider):
         ).to("cuda")
 
         with torch.inference_mode():
+            # repetition_penalty=1.15 + no_repeat_ngram_size=8 guard against
+            # the degenerate-loop failure where Qwen on long technical docs
+            # gets stuck repeating a parameter row (e.g. "Operating voltage"
+            # / "Current consumption" alternating) until max_new_tokens
+            # is exhausted and the JSON is truncated mid-value. The ngram
+            # size is set large enough that legitimate JSON field-name
+            # repetition (e.g. {"name": ...}) is not blocked.
             outputs = LocalTextProvider._model.generate(
                 input_ids=inputs,
                 max_new_tokens=max_tokens,
@@ -502,7 +509,8 @@ class LocalTextProvider(BaseVLMProvider):
                 pad_token_id=LocalTextProvider._tokenizer.eos_token_id,
                 temperature=0.1,
                 do_sample=False,
-                repetition_penalty=1.05,
+                repetition_penalty=1.15,
+                no_repeat_ngram_size=8,
             )
         prompt_len = inputs.shape[-1]
         generated = outputs[0][prompt_len:]
