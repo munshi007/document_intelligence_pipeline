@@ -176,12 +176,31 @@ def run_smoke(pdf_path: Path) -> dict:
         return payload
     try:
         data = json.loads(scorecard_path.read_text())
-        non_empty = sum(1 for v in data.values() if v not in (None, "", [], {}))
-        payload["fields_non_empty"] = non_empty
-        ok(f"{pdf_path.name}: {non_empty} non-empty top-level fields, {elapsed:.1f}s")
     except Exception as e:
         payload["error"] = f"Could not parse output JSON: {e}"
         fail(payload["error"])
+        return payload
+
+    # The pipeline writes {"status": "failed", "error": "..."} on extractor
+    # failures while still returning exit 0 — treat that as a failed smoke.
+    if isinstance(data, dict) and data.get("status") == "failed":
+        payload["exit_code"] = 1
+        payload["error"] = data.get("error", "pipeline marked status=failed")
+        fail(f"{pdf_path.name}: pipeline reported status=failed — {payload['error']}")
+        return payload
+
+    # Count real payload fields, excluding meta-keys that always exist.
+    meta_keys = {"status", "error", "details", "schema_title", "reasoning_thoughts",
+                 "confidence_score", "page_references", "source_evidence"}
+    real_fields = {k: v for k, v in data.items() if k not in meta_keys}
+    non_empty = sum(1 for v in real_fields.values() if v not in (None, "", [], {}))
+    payload["fields_non_empty"] = non_empty
+    if non_empty == 0:
+        payload["exit_code"] = 1
+        payload["error"] = "no payload fields were populated"
+        fail(f"{pdf_path.name}: 0 payload fields populated — extraction produced nothing useful")
+        return payload
+    ok(f"{pdf_path.name}: {non_empty} non-empty payload fields, {elapsed:.1f}s")
     return payload
 
 
