@@ -92,6 +92,14 @@ Focus on invoice fields with line items:
 4. Totals: subtotal, tax/VAT lines, shipping, grand total.
 5. Currency: infer from $/€/£/¥ symbols in totals; populate currency field if present in schema.
 """,
+        "Logistics": """
+Focus on freight quote / bill-of-lading / shipping tariff fields:
+1. Identity: quote number / reference, issuing carrier, recipient/customer, quote date, validity dates.
+2. Route: origin and destination (cities/countries), ports of loading and discharge, haulage type.
+3. Commodity: cargo description, container types/sizes (e.g. 20'STD, 40'HC), weight/volume if given.
+4. Charges: EVERY line in every rate table — description (Seafreight, Bunker, Surcharge, Document Fee…), value, currency, and the unit (per container / per BoL / lumpsum) when stated.
+5. Currency: infer from $/€/£/¥ symbols or three-letter codes (USD, EUR, GBP, ARS…); populate currency on each charge.
+""",
         "General": """
 Focus on comprehensive narrative capturing:
 1. Extract all names and organizations in 'Entities'.
@@ -99,6 +107,36 @@ Focus on comprehensive narrative capturing:
 3. Provide a high-level narrative 'Summary' and 'Purpose'.
 """
     }
+
+    # Domain label canonicalisation. The Discovery agent may return either
+    # capitalised ("Logistics") or lowercased ("logistics") labels depending on
+    # whether the LLM path or the heuristic path produced the result, and
+    # aliases (Industrial_datasheet/_manual/_product_pdf) all share one hint.
+    _DOMAIN_ALIAS = {
+        "industrial_datasheet": "Industrial_datasheet",
+        "industrial_manual":    "Industrial_manual",
+        "industrial_product_pdf": "Industrial",
+        "industrial":           "Industrial",
+        "hardware":             "Hardware",
+        "logistics":            "Logistics",
+        "invoice":              "Invoice",
+        "corporate":            "Corporate",
+        "medical_record":       "General",
+        "academic":             "General",
+        "legal":                "General",
+        "general":              "General",
+    }
+
+    def _specialist_hint(self, domain: str) -> str:
+        """Case- and alias-tolerant lookup into SPECIALIST_HINTS."""
+        if not domain:
+            return f"Follow the JSON schema exactly to extract all entities, properties, and lists relevant to the document."
+        if domain in self.SPECIALIST_HINTS:
+            return self.SPECIALIST_HINTS[domain]
+        canon = self._DOMAIN_ALIAS.get(domain.lower())
+        if canon and canon in self.SPECIALIST_HINTS:
+            return self.SPECIALIST_HINTS[canon]
+        return f"Follow the JSON schema exactly to extract all entities, properties, and lists relevant to the {domain} domain."
 
     def __init__(self, model_id: str = "gpt-4o", observer: Optional[Any] = None):
         self.model_id = model_id
@@ -1276,7 +1314,7 @@ SOURCE CONTENT:
                 logger.warning("Direct extraction failed. Falling through to One-Pass batched mode.")
 
         # Standard One-Pass logic for simple domains...
-        hint = self.SPECIALIST_HINTS.get(domain, f"Follow the JSON schema exactly to extract all entities, properties, and lists relevant to the {domain} domain.")
+        hint = self._specialist_hint(domain)
         
         # Prefer node-aware semantic batches to avoid splitting tables across boundaries.
         if context_nodes:
@@ -1301,16 +1339,16 @@ SOURCE CONTENT:
 
         for i, batch_content in enumerate(batches):
             batch_id = f"batch_{i+1:04d}"
-            # Schema-aligned hint: instructions match the ACTUAL schema fields
+            # Schema-aligned hint: instructions are derived from the ACTUAL
+            # schema fields. The domain-specific SPECIALIST_HINTS (added below)
+            # describe *what kind of content* to look for, not specific field
+            # names — that stays in the schema-driven hint.
             schema_hint = self._build_schema_aligned_hint(response_model, domain)
+            domain_hint = self._specialist_hint(domain)
             batch_prompt = f"""{schema_hint}
 
-### GROUNDING HINTS:
-- The 'product_name' is typically at the very top (e.g., 'Cube67+ ...').
-- The 'art_no' (Article Number) is often near the 'Art.-No.' or 'Part No.' label.
-- For Segment 1: PRIORITIZE 'product_name', 'art_no', and 'manufacturer'.
-- For all segments: Extract EVERY technical parameter and connector detail.
-- Extract EVERY pin signal (pin number, signal, function, color) from technical tables.
+### DOMAIN GUIDANCE ({domain}):
+{domain_hint}
 
 SOURCE CONTENT (Segment {i+1}/{len(batches)}):
 {batch_content}
@@ -1675,7 +1713,7 @@ STRICT RULES:
 4. Focus on high precision. Only extract what is explicitly stated or clearly implied.
 
 SPECIALIST HINTS:
-{self.SPECIALIST_HINTS.get(domain, f"Thoroughly extract all properties relevant to a {domain} document.")}
+{self._specialist_hint(domain)}
 
 SOURCE CONTENT:
 {json.dumps(combined_json, indent=2, default=str)}
@@ -1850,7 +1888,7 @@ You are a HIGH-FIDELITY DATA REFINER. Your task is to map RAW harvested Markdown
 1. **FULL COVERAGE**: You MUST extract all requested fields based on the schema definition.
 2. **NO TRUNCATION**: The Markdown is long. Map every single relevant data point found.
 3. **DOMAIN**: This is a {domain} document.
-{self.SPECIALIST_HINTS.get(domain, f"Follow the standard schema requirements for a {domain} document.")}
+{self._specialist_hint(domain)}
 
 ### OUTPUT FORMAT:
 Output ONLY a valid JSON object matching the {target_schema_name} schema.

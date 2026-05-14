@@ -11,7 +11,6 @@ Design Reference:
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Union
 from pydantic import BaseModel, Field
-from enum import Enum
 
 
 class SourceEvidence(BaseModel):
@@ -21,13 +20,6 @@ class SourceEvidence(BaseModel):
     confidence: float = 1.0
 
 
-class ParameterType(str, Enum):
-    ELECTRICAL = "electrical"
-    MECHANICAL = "mechanical"
-    ENVIRONMENTAL = "environmental"
-    LOGISTICAL = "logistical"
-
-
 class TechParameter(BaseModel):
     """A single technical specification (e.g., 'Operating Voltage: 24V')."""
     name: str = Field(..., description="Name of the parameter (e.g., 'Supply Voltage')")
@@ -35,7 +27,14 @@ class TechParameter(BaseModel):
     unit: Optional[str] = Field(None, description="The unit (e.g., 'V DC', 'kg', 'mm')")
     min_value: Optional[float] = None
     max_value: Optional[float] = None
-    param_type: ParameterType = ParameterType.ELECTRICAL
+    # Free-form category hint. Common values: electrical, mechanical, environmental,
+    # logistical, electromagnetic_compatibility, thermal, optical, safety. Kept as a
+    # free string rather than a closed Enum so that valid extracted parameters
+    # outside an a-priori taxonomy (e.g. EMC) are not rejected during validation.
+    param_type: Optional[str] = Field(
+        None,
+        description="Category of the parameter (e.g. electrical, mechanical, environmental, logistical, electromagnetic_compatibility, thermal, optical, safety).",
+    )
     source_evidence: Optional[SourceEvidence] = None
 
 

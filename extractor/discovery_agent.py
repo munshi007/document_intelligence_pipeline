@@ -381,6 +381,105 @@ class DiscoveryAgent:
         })
 
     @staticmethod
+    def _canonical_domain(domain: str) -> str:
+        """
+        Normalise a domain string (case + Industrial aliases) so the LLM-returned
+        label can be compared against the heuristic label. Returns "" if empty.
+        """
+        if not domain:
+            return ""
+        d = domain.strip().lower()
+        if d.startswith("industrial"):
+            return "industrial"
+        if d in {"medical", "medical_record", "medical record"}:
+            return "medical_record"
+        return d
+
+    # Telltale field-name fragments per domain. These are field names that
+    # ONLY make sense when the document is of that domain, so seeing them in
+    # the LLM's skeleton for a different-domain doc is evidence of hallucination.
+    _DOMAIN_TELLTALES: Dict[str, set] = {
+        "industrial": {
+            "art_no", "article_no", "article_number", "manufacturer",
+            "serial_series", "lot_serial_series", "pinout", "pin_assignment",
+            "connectors", "diagnostics", "supply_voltage",
+        },
+        "logistics": {
+            "quote_no", "quote_number", "port_of_loading", "port_of_discharge",
+            "bill_of_lading", "freight", "surcharge", "bunker",
+            "haulage", "tariff",
+        },
+        "invoice": {
+            "bill_to", "ship_to", "unit_price", "grand_total", "subtotal",
+            "line_items", "invoice_no", "invoice_number",
+        },
+        "medical_record": {
+            "patient", "diagnosis", "prescription", "physician", "icd10",
+        },
+    }
+
+    @classmethod
+    def _collect_skeleton_field_names(cls, schema: Any, out: set) -> None:
+        """Recursively collect property names from a JSON-schema-like dict."""
+        if isinstance(schema, dict):
+            props = schema.get("properties")
+            if isinstance(props, dict):
+                for k, v in props.items():
+                    out.add(str(k).lower())
+                    cls._collect_skeleton_field_names(v, out)
+            items = schema.get("items")
+            if items is not None:
+                cls._collect_skeleton_field_names(items, out)
+
+    def _llm_skeleton_consistent(
+        self,
+        llm_result: DiscoveryResult,
+        heur_domain: str,
+        heur_conf: float,
+    ) -> bool:
+        """
+        Cross-validate an LLM-returned discovery result against the regex
+        heuristic. The check fires only when the heuristic is reasonably
+        confident — for ambiguous documents we trust the LLM.
+
+        Two ways the LLM result can disagree:
+          (1) Domain label mismatch (rare with extraction-tuned LLMs that copy
+              hints from the prompt).
+          (2) Skeleton field names are telltales of a different domain — this
+              is the Qwen industrial-bias case where the label may agree with
+              the heuristic but the schema fields are still industrial.
+        """
+        if heur_conf < 0.5 or heur_domain in ("", "General"):
+            return True
+        heur_canon = self._canonical_domain(heur_domain)
+        llm_canon = self._canonical_domain(getattr(llm_result, "domain", ""))
+
+        # (1) Label-level disagreement.
+        if llm_canon and llm_canon != heur_canon:
+            logger.warning(
+                f"Discovery cross-check: LLM domain=[{llm_result.domain}] disagrees with "
+                f"heuristic=[{heur_domain}] (conf={heur_conf:.2f}) — preferring heuristic."
+            )
+            return False
+
+        # (2) Schema-shape disagreement: skeleton contains telltale fields for
+        # a different domain than the heuristic suggests.
+        field_names: set = set()
+        self._collect_skeleton_field_names(llm_result.nested_skeleton, field_names)
+        for other_domain, telltales in self._DOMAIN_TELLTALES.items():
+            if other_domain == heur_canon:
+                continue
+            hits = field_names & telltales
+            if hits:
+                logger.warning(
+                    f"Discovery cross-check: skeleton contains {other_domain}-telltale "
+                    f"fields {sorted(hits)} but heuristic says [{heur_domain}] "
+                    f"(conf={heur_conf:.2f}) — preferring heuristic."
+                )
+                return False
+        return True
+
+    @staticmethod
     def _stratified_preview(doc_preview: str, max_chars: int = 8000) -> str:
         """
         Sample head + middle + tail of a long doc preview so rare modules
@@ -570,13 +669,14 @@ Respond ONLY with a JSON object in exactly this shape:
                 and isinstance(result.nested_skeleton, dict)
                 and "properties" in result.nested_skeleton
                 and result.nested_skeleton["properties"]
+                and self._llm_skeleton_consistent(result, heur_domain, heur_conf)
             ):
                 logger.info(
                     f"Discovery Success (structured): "
                     f"Domain=[{result.domain}] HighDensity=[{result.is_high_density}]"
                 )
                 return result
-            logger.info("Structured discovery returned empty skeleton — trying raw-text path...")
+            logger.info("Structured discovery returned empty or inconsistent skeleton — trying raw-text path...")
         except Exception as e:
             logger.warning(f"Structured discovery failed: {e}. Trying raw-text path...")
 
@@ -592,12 +692,14 @@ Respond ONLY with a JSON object in exactly this shape:
             ):
                 data.setdefault("confidence", 1.0)
                 result = DiscoveryResult(**data)
-                logger.info(
-                    f"Discovery Success (raw): "
-                    f"Domain=[{result.domain}] HighDensity=[{result.is_high_density}]"
-                )
-                return result
-            logger.warning("Raw discovery produced invalid skeleton — trying heuristic fallback.")
+                if self._llm_skeleton_consistent(result, heur_domain, heur_conf):
+                    logger.info(
+                        f"Discovery Success (raw): "
+                        f"Domain=[{result.domain}] HighDensity=[{result.is_high_density}]"
+                    )
+                    return result
+            else:
+                logger.warning("Raw discovery produced invalid skeleton — trying heuristic fallback.")
         except Exception as e:
             logger.error(f"Raw scout failed: {e}")
 
