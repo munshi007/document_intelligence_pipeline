@@ -161,6 +161,20 @@ def run_extract(
             json.dumps({"status": "failed", "error": str(e)}, indent=2),
             encoding="utf-8",
         )
+    except Exception as e:
+        # Pydantic ValidationError, downstream library errors, etc. The pipeline
+        # contract is "always emit a well-formed extraction.json so callers don't
+        # need to special-case missing files." Keep the error type in the payload
+        # for easy triage; never let a process-killing exception escape this
+        # boundary on the extraction path.
+        logger.error(f"[extract] unexpected failure during extraction: {type(e).__name__}: {e}")
+        paths.extraction.write_text(
+            json.dumps(
+                {"status": "failed", "error": f"{type(e).__name__}: {e}"[:2000]},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     # Always emit an evaluation scorecard when extract ran.
     try:
