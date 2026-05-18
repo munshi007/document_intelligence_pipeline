@@ -159,8 +159,27 @@ class ConverterEngine:
     """
 
     def __init__(self, output_dir: str = "output/v3", debug: bool = False, vlm_model: Optional[str] = None, vlm_provider: Optional[str] = None):
-        self.pipeline = EnhancedPipeline(output_dir=output_dir, debug_mode=debug, vlm_model=vlm_model, vlm_provider=vlm_provider)
+        # EnhancedPipeline is lazy: only the heavy stages (convert_to_regions
+        # via self.pipeline.process_pdf, and any direct callers of
+        # self.pipeline.components) trigger model loading. Pure helpers like
+        # build_markdown_and_manifest() don't touch self.pipeline at all, so a
+        # caller can construct a ConverterEngine and run them for free.
         self.output_dir = Path(output_dir)
+        self._debug = debug
+        self._vlm_model = vlm_model
+        self._vlm_provider = vlm_provider
+        self._pipeline: Optional["EnhancedPipeline"] = None
+
+    @property
+    def pipeline(self) -> "EnhancedPipeline":
+        if self._pipeline is None:
+            self._pipeline = EnhancedPipeline(
+                output_dir=str(self.output_dir),
+                debug_mode=self._debug,
+                vlm_model=self._vlm_model,
+                vlm_provider=self._vlm_provider,
+            )
+        return self._pipeline
 
     # ── public API ───────────────────────────────────────────────────
     def convert_to_regions(

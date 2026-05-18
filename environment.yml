@@ -79,6 +79,7 @@ dependencies:
       - tqdm==4.67.1
       - requests==2.32.5
       - PyYAML>=6.0
+      - typer==0.24.1                 # per-stage CLI (`python -m cli ...`)
 
       # API clients (optional teacher/oracle calls).
       - anthropic==0.86.0
