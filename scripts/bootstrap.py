@@ -2,19 +2,27 @@
 Bootstrap — one-shot reproducibility verifier.
 
 What it does, in order:
-  1. Preflight    — Python version, CUDA availability, free disk, manifest files.
-  2. Model fetch  — downloads every entry in config/models.yaml at its pinned
-                    revision SHA into the HuggingFace cache.
-  3. Smoke test   — runs the pipeline end-to-end on the committed sample PDFs
-                    (data/simple_invoice.pdf, data/Super_Complex_2.pdf) and
-                    checks that each produces a non-empty extraction.
-  4. Sentinel     — writes BOOTSTRAP_OK with a JSON summary that an examiner
-                    can paste into a defence appendix.
+  1. Preflight     — Python version, CUDA availability, free disk, manifest
+                     files, and a fast import-check of every pipeline module
+                     (catches missing deps / syntax errors in <5 s, before any
+                     model is touched).
+  2. Model fetch   — downloads every entry in config/models.yaml at its pinned
+                     revision SHA into the HuggingFace cache.
+  3. Cache verify  — confirms every fetched model is actually resident in the
+                     HF cache (catches a partial download or moved $HF_HOME
+                     in seconds, without loading weights into VRAM).
+  4. Smoke test    — runs the pipeline end-to-end on the committed sample PDFs
+                     (data/simple_invoice.pdf, data/Super_Complex_2.pdf) and
+                     checks that each produces a non-empty extraction.
+  5. Sentinel      — writes BOOTSTRAP_OK with a JSON summary that an examiner
+                     can paste into a defence appendix.
 
 Usage:
     python scripts/bootstrap.py                  # full run
     python scripts/bootstrap.py --skip-download  # rerun smoke only
     python scripts/bootstrap.py --skip-smoke     # download only
+    python scripts/bootstrap.py --quick-check    # preflight + cache verify, no
+                                                 # download, no smoke (~10 s)
     python scripts/bootstrap.py --yes            # skip the size confirmation
 """
 from __future__ import annotations
@@ -110,6 +118,87 @@ def check_free_disk(required_gb: float) -> None:
         fail(f"Free disk at {cache_root}: {free_gb:.1f} GB (need ~{required_gb:.1f} GB + 5 GB headroom)")
         sys.exit(2)
     ok(f"Free disk at {cache_root}: {free_gb:.1f} GB (need ~{required_gb:.1f} GB)")
+
+
+# Pipeline modules whose import we verify before doing anything slow.
+# Failure here means a broken environment, missing __init__.py, syntax error,
+# or unsatisfied dep — exactly the things a fresh clone will hit first.
+_PIPELINE_MODULES = [
+    "converter.engine",
+    "chunker.graph_builder",
+    "storage.store",
+    "extractor.agent",
+    "extractor.discovery_agent",
+    "extractor.schema_engine",
+    "extractor.schema_registry",
+    "extractor.evaluation",
+    "extractor.normalizer",
+    "common.model_registry",
+    "common.vlm_client",
+    "pipeline.visualization_manager",
+]
+
+
+def check_imports() -> None:
+    import importlib
+    failures = []
+    for mod in _PIPELINE_MODULES:
+        try:
+            importlib.import_module(mod)
+        except Exception as e:
+            failures.append((mod, f"{type(e).__name__}: {e}"))
+    if failures:
+        fail("Pipeline modules failed to import:")
+        for mod, err in failures:
+            print(f"        - {mod:35s} {err}", file=sys.stderr)
+        print("\n    Common causes: missing __init__.py, deps not installed, "
+              "running outside the conda env, or a syntax error introduced "
+              "by a local edit.", file=sys.stderr)
+        sys.exit(2)
+    ok(f"All {len(_PIPELINE_MODULES)} pipeline modules import cleanly")
+
+
+def check_models_cached() -> dict:
+    """Verify each pinned model resolves to a real path in the HF cache.
+
+    Uses huggingface_hub's offline resolution (no network), so it's fast and
+    safe — but loads no weights into VRAM. Catches partial downloads, wrong
+    revisions, or a moved HF_HOME that the smoke test would otherwise only
+    surface after minutes of import-time loading.
+    """
+    from common import model_registry
+    from huggingface_hub import try_to_load_from_cache
+    from huggingface_hub.constants import HF_HUB_CACHE
+    import os as _os
+
+    specs = model_registry.all_specs()
+    summary: dict = {}
+    missing: list[str] = []
+    for s in specs.values():
+        if s.filename:
+            cached = try_to_load_from_cache(repo_id=s.repo_id, filename=s.filename, revision=s.revision)
+            present = isinstance(cached, str) and _os.path.exists(cached)
+            summary[s.name] = {"repo_id": s.repo_id, "revision": s.revision,
+                               "kind": "file", "cached_at": cached if present else None}
+            if not present:
+                missing.append(f"{s.name} ({s.repo_id}@{s.revision[:10]} / {s.filename})")
+        else:
+            # Snapshot — check the revision dir exists under the hub cache.
+            safe_repo = s.repo_id.replace("/", "--")
+            snapshot_dir = Path(HF_HUB_CACHE) / f"models--{safe_repo}" / "snapshots" / s.revision
+            present = snapshot_dir.is_dir() and any(snapshot_dir.iterdir())
+            summary[s.name] = {"repo_id": s.repo_id, "revision": s.revision,
+                               "kind": "snapshot", "cached_at": str(snapshot_dir) if present else None}
+            if not present:
+                missing.append(f"{s.name} ({s.repo_id}@{s.revision[:10]})")
+
+    if missing:
+        fail("Models missing from local HF cache — run without --skip-download:")
+        for m in missing:
+            print(f"        - {m}", file=sys.stderr)
+        sys.exit(3)
+    ok(f"All {len(specs)} models resolved in HF cache")
+    return summary
 
 
 # ────────────────────────────── model fetch ──────────────────────────────────
@@ -210,8 +299,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Reproducibility bootstrap")
     parser.add_argument("--skip-download", action="store_true", help="Skip the model-fetch stage.")
     parser.add_argument("--skip-smoke", action="store_true", help="Skip the smoke-test stage.")
+    parser.add_argument("--quick-check", action="store_true",
+                        help="Preflight + cache verify only. No downloads, no smoke. ~10 seconds.")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip download confirmation prompt.")
     args = parser.parse_args()
+
+    # --quick-check implies skip-download and skip-smoke.
+    if args.quick_check:
+        args.skip_download = True
+        args.skip_smoke = True
 
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -220,6 +316,7 @@ def main() -> int:
     check_manifest_files()
     check_sample_pdfs()
     check_cuda()
+    check_imports()
 
     from common import model_registry
     total_gb = sum(s.approx_size_gb for s in model_registry.all_specs().values())
@@ -237,8 +334,11 @@ def main() -> int:
     else:
         warn("STAGE 2 skipped (--skip-download)")
 
+    banner("STAGE 3: Cache verify")
+    sentinel["stages"]["cache"] = check_models_cached()
+
     if not args.skip_smoke:
-        banner("STAGE 3: Smoke test")
+        banner("STAGE 4: Smoke test")
         smoke_results = []
         for pdf in SAMPLE_PDFS:
             step(f"Running pipeline on {pdf.name}")
@@ -249,7 +349,7 @@ def main() -> int:
             SENTINEL_PATH.write_text(json.dumps(sentinel, indent=2))
             return 4
     else:
-        warn("STAGE 3 skipped (--skip-smoke)")
+        warn("STAGE 4 skipped (--skip-smoke)")
 
     sentinel["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     SENTINEL_PATH.write_text(json.dumps(sentinel, indent=2))
