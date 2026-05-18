@@ -136,6 +136,9 @@ _PIPELINE_MODULES = [
     "common.model_registry",
     "common.vlm_client",
     "pipeline.visualization_manager",
+    "stages.paths",
+    "stages.orchestrate",
+    "cli",
 ]
 
 
