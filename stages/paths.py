@@ -11,12 +11,35 @@ README references) keep working unchanged.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
 
 PathLike = Union[str, Path]
+
+# Longest filename suffix any stage writes is ``_universal_extraction.json``
+# (26 chars), so doc_stem must stay under 255 - 26 = 229 to be safe. We
+# pick 200 as a comfortable headroom for any future suffix growth and to
+# leave the filename humane-looking when truncated.
+_MAX_STEM_LEN = 200
+
+
+def safe_stem(stem: str) -> str:
+    """Truncate excessively long PDF stems to fit OS filename limits.
+
+    Some upstream PDFs ship with stems north of 250 chars (URL-encoded
+    Google Drive exports, scanner output, etc.) which overflows the
+    255-char filename limit once any of our suffixes (``_universal_extraction.json``)
+    is appended. We deterministically hash-suffix anything past ``_MAX_STEM_LEN``
+    so the same PDF always maps to the same stem on disk, and so the truncated
+    head remains a useful breadcrumb when grepping through ``output/``.
+    """
+    if len(stem) <= _MAX_STEM_LEN:
+        return stem
+    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:10]
+    return f"{stem[:40]}__{digest}"
 
 
 @dataclass(frozen=True)
@@ -28,7 +51,7 @@ class StagePaths:
 
     @classmethod
     def for_pdf(cls, pdf: PathLike, output_dir: PathLike) -> "StagePaths":
-        return cls(output_dir=Path(output_dir), doc_stem=Path(pdf).stem)
+        return cls(output_dir=Path(output_dir), doc_stem=safe_stem(Path(pdf).stem))
 
     def ensure(self) -> None:
         """Create output and storage dirs. Cheap, idempotent, side-effect only."""
