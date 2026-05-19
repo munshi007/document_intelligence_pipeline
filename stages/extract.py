@@ -18,7 +18,10 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Type, get_args, get_origin
+
+from pydantic import BaseModel
+from pydantic_core import PydanticUndefined as _PU
 
 from extractor.agent import ExtractorAgent, ExtractionFailureError
 from extractor.discovery_agent import DiscoveryAgent
@@ -29,6 +32,76 @@ from stages.paths import StagePaths
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXTRACTOR = "RMunshi/librarian-qwen-extractor"
+
+
+def _scrub_pydantic_undefined(obj: Any) -> Any:
+    """Drop PydanticUndefined sentinels at any depth.
+
+    ExtractorAgent's batch-merge logic occasionally builds partial sub-models
+    via model_construct() (bypasses validation), leaving required leaves as
+    PydanticUndefined. Pydantic v2's own json encoder refuses to serialize
+    that sentinel, so model_dump() → json.dumps() blows up at the write site.
+    Mirrors the scrub already used inside ExtractorAgent (agent.py near
+    line 1565). Dict keys with a PU value are removed; PU inside lists is
+    dropped from the list.
+    """
+    if obj is _PU:
+        return None
+    if isinstance(obj, dict):
+        return {k: _scrub_pydantic_undefined(v) for k, v in obj.items() if v is not _PU}
+    if isinstance(obj, list):
+        return [_scrub_pydantic_undefined(v) for v in obj if v is not _PU]
+    return obj
+
+
+def _is_empty(v: Any) -> bool:
+    """A dict-leaf is 'empty' if it carries no extracted information."""
+    return v is None or v == "" or v == [] or v == {}
+
+
+def _drop_invalid_list_items(data: Dict[str, Any], model_type: Type[BaseModel]) -> Dict[str, Any]:
+    """Drop zombie sub-model entries from list-of-BaseModel fields.
+
+    ExtractorAgent's batch merger occasionally emits a fully-empty sub-model
+    via model_construct() — e.g. a TechParameter with every field None after
+    the scrub. Re-validation against the inner type can't catch these because
+    DiscoveryAgent.synthesize_model() builds dynamic sub-classes whose fields
+    are all Optional (and so accept all-None). The reliable signal at the
+    write boundary is therefore data-shaped, not schema-shaped: a dict whose
+    every value is empty conveys no extraction and should be dropped.
+
+    Only walks one level deep into list-of-BaseModel fields — that's the
+    documented leak surface from agent.py's merger and matches what we see
+    in practice.
+    """
+    cleaned = dict(data)
+    for field_name, field_info in model_type.model_fields.items():
+        if field_name not in cleaned:
+            continue
+        annotation = field_info.annotation
+        if get_origin(annotation) not in (list, List):
+            continue
+        args = get_args(annotation)
+        if not args or not isinstance(args[0], type) or not issubclass(args[0], BaseModel):
+            continue
+        inner_model = args[0]
+        items = cleaned[field_name]
+        if not isinstance(items, list):
+            continue
+        valid_items: List[Any] = []
+        dropped = 0
+        for item in items:
+            if isinstance(item, dict) and all(_is_empty(v) for v in item.values()):
+                dropped += 1
+                continue
+            valid_items.append(item)
+        if dropped:
+            logger.info(
+                f"[extract] dropped {dropped} empty {inner_model.__name__} "
+                f"item(s) from '{field_name}' (batch-merge zombie records)"
+            )
+        cleaned[field_name] = valid_items
+    return cleaned
 
 
 def _load_discovery_meta(path: Path) -> Dict[str, Any]:
@@ -59,23 +132,37 @@ def run_extract(
     save_debug_traces: bool = False,
     distill: bool = False,
     force: bool = False,
+    response_model: Optional[Type[BaseModel]] = None,
 ) -> None:
+    """Run the extraction stage.
+
+    If `response_model` is provided (the in-process path, e.g. from
+    stages.orchestrate.run_extract_group right after discovery), the live
+    Pydantic class is used directly and no JSON-Schema round-trip happens.
+    This matches what the historical run_v3.py did and preserves nested-type
+    fidelity (e.g. SourceEvidence with typed page_number).
+
+    If `response_model` is None (standalone subprocess invocation), we
+    reconstruct the schema from auto_schema.json via
+    synthesize_from_external_schema. That path is intentionally lossy — it
+    drops $ref and anyOf details — but it remains the only sensible behavior
+    when discovery ran in a different process and the only handoff available
+    is the persisted JSON Schema.
+    """
     paths.ensure()
 
     if paths.extraction.exists() and not force:
         logger.info(f"[extract] reusing existing {paths.extraction.name}")
         return
 
-    # Reconstruct the runtime Pydantic schema from the auto_schema JSON. This is
-    # the discovery→extract handoff: a single function that already exists on
-    # DiscoveryAgent and produces an identical model to synthesize_model().
-    if not paths.auto_schema.exists():
-        raise FileNotFoundError(
-            f"Schema artifact missing: {paths.auto_schema}. Run discover-schema first."
+    if response_model is None:
+        if not paths.auto_schema.exists():
+            raise FileNotFoundError(
+                f"Schema artifact missing: {paths.auto_schema}. Run discover-schema first."
+            )
+        response_model = DiscoveryAgent(model_id=extractor_model).synthesize_from_external_schema(
+            str(paths.auto_schema)
         )
-    response_model = DiscoveryAgent(model_id=extractor_model).synthesize_from_external_schema(
-        str(paths.auto_schema)
-    )
 
     discovery_meta = _load_discovery_meta(paths.discovery)
     domain = discovery_meta.get("domain", "General")
@@ -131,8 +218,11 @@ def run_extract(
             if not getattr(final_record, k, None):
                 setattr(final_record, k, v)
 
+        dumped = _scrub_pydantic_undefined(final_record.model_dump())
+        if isinstance(dumped, dict):
+            dumped = _drop_invalid_list_items(dumped, response_model)
         paths.extraction.write_text(
-            json.dumps(final_record.model_dump(), indent=2, ensure_ascii=False),
+            json.dumps(dumped, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         logger.info(f"[extract] wrote {paths.extraction.name}")

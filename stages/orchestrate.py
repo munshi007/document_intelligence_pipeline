@@ -70,15 +70,25 @@ def run_extract_group(
     distill: bool = False,
     force: bool = False,
 ) -> None:
-    """Discover-schema → extract in one process (text model loaded once)."""
+    """Discover-schema → extract in one process (text model loaded once).
+
+    Critically, the live Pydantic class produced by discover-schema is handed
+    straight to extract, bypassing the JSON-Schema round-trip on disk. The
+    on-disk auto_schema.json is still written (so a later standalone extract
+    invocation could pick it up), but in-process callers get full type
+    fidelity — matching what the historical monolithic run_v3.py did and
+    avoiding the validation failures that would otherwise happen when the
+    reconstructor drops nested $ref / anyOf details.
+    """
     logger.info(f"[group:extract] starting on {pdf.name}")
-    run_discover_schema(
+    discover_out = run_discover_schema(
         pdf, paths,
         extractor_model=extractor_model,
         schema_mode=schema_mode,
         schema_path=schema_path,
         force=force,
     )
+    response_model = discover_out[1] if discover_out is not None else None
     run_extract(
         pdf, paths,
         extractor_model=extractor_model,
@@ -86,5 +96,6 @@ def run_extract_group(
         save_debug_traces=save_debug_traces,
         distill=distill,
         force=force,
+        response_model=response_model,
     )
     logger.info(f"[group:extract] done")

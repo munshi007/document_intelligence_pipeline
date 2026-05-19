@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Type
+
+from pydantic import BaseModel
 
 from extractor.discovery_agent import DiscoveryAgent, DiscoveryResult
 from stages.paths import StagePaths
@@ -30,14 +32,28 @@ def run_discover_schema(
     schema_mode: str = "auto",
     schema_path: Optional[str] = None,
     force: bool = False,
-) -> None:
+) -> Optional[Tuple[DiscoveryResult, Type[BaseModel]]]:
+    """Run the discovery stage.
+
+    Returns (DiscoveryResult, response_model) when a fresh model was built so
+    that in-process callers (notably stages.orchestrate.run_extract_group) can
+    hand the Pydantic class straight to the extract stage without paying the
+    JSON-Schema round-trip — the reconstructor at discovery_agent.py
+    synthesize_from_external_schema is intentionally lossy and would otherwise
+    drop nested types like SourceEvidence's typed page_number.
+
+    Returns None on the smart-skip path (existing artifacts reused). Callers
+    that don't need the in-memory model can ignore the return value entirely;
+    standalone subprocess invocations still re-derive the model from the
+    persisted auto_schema.json on the extract side.
+    """
     paths.ensure()
 
     if paths.discovery.exists() and paths.auto_schema.exists() and not force:
         logger.info(
             f"[discovery] reusing existing {paths.discovery.name} + {paths.auto_schema.name}"
         )
-        return
+        return None
 
     agent = DiscoveryAgent(model_id=extractor_model)
 
@@ -85,3 +101,4 @@ def run_discover_schema(
         f"is_high_density={discovery_result.is_high_density} → "
         f"{paths.discovery.name} + {paths.auto_schema.name}"
     )
+    return discovery_result, response_model

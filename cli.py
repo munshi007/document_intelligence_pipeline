@@ -105,12 +105,15 @@ def _ensure_discovery(
     extractor_model: str,
     schema_mode: str,
     schema_path: Optional[str],
-) -> None:
+):
+    """Returns (DiscoveryResult, response_model) when a fresh discovery just
+    ran in this process, otherwise None. Lets the caller forward the live
+    Pydantic class to extract and skip the JSON-Schema round-trip."""
     if paths.discovery.exists() and paths.auto_schema.exists():
-        return
+        return None
     _ensure_markdown(pdf, paths, vlm_model=vlm_model, max_pages=max_pages, debug=debug)
     _ensure_graph(pdf, paths, vlm_model=vlm_model, max_pages=max_pages, debug=debug)
-    run_discover_schema(
+    return run_discover_schema(
         pdf, paths,
         extractor_model=extractor_model,
         schema_mode=schema_mode,
@@ -219,12 +222,13 @@ def cmd_extract(
     """Stage 5: run extraction against the discovered/explicit schema."""
     _setup_logging()
     paths = StagePaths.for_pdf(pdf, output_dir)
-    _ensure_discovery(
+    discover_out = _ensure_discovery(
         pdf, paths,
         vlm_model=vlm_model, max_pages=max_pages, debug=debug,
         extractor_model=extractor_model,
         schema_mode=schema_mode, schema_path=schema_path,
     )
+    response_model = discover_out[1] if discover_out is not None else None
     run_extract(
         pdf, paths,
         extractor_model=extractor_model,
@@ -232,6 +236,7 @@ def cmd_extract(
         save_debug_traces=save_debug_traces,
         distill=distill,
         force=force,
+        response_model=response_model,
     )
 
 
