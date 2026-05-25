@@ -11,6 +11,16 @@ non_empty_extraction_rate   — 1.0 if at least one field populated
 grounded_reference_rate     — 1.0 if page_references present
 retry_frequency             — parse_failures / total_batches
 
+Grounding-verification metrics (populated only when grounding ran)
+grounding_checked           — string spans the verifier compared to the source
+grounding_verified          — spans found verbatim in the source
+grounding_repaired          — spans snapped to a close real source span
+grounding_flagged           — spans absent from the source (likely fabricated)
+grounding_pass_rate         — (verified + repaired) / checked. The honest
+                              counterweight to non_empty_extraction_rate: a
+                              field can be "populated" yet ungrounded, i.e. the
+                              model invented it. A low pass rate flags that.
+
 Ground-truth metrics (populated only when ground_truth dict is passed)
 gt_field_precision          — precision against annotated gold fields
 gt_field_recall             — recall against annotated gold fields
@@ -40,7 +50,9 @@ def _populated_field_count(payload: Dict[str, Any], ignore_fields: List[str] | N
     ignore = set(ignore_fields or [])
     count = 0
     for key, value in payload.items():
-        if key in ignore:
+        # Underscore-prefixed keys are pipeline metadata (e.g. _grounding), not
+        # extracted content — never count them toward the populated total.
+        if key in ignore or key.startswith("_"):
             continue
         if not _is_empty_value(value):
             count += 1
@@ -265,6 +277,27 @@ def evaluate_extraction(
             "grounding_retries_accepted": int(accepted),
         }
 
+    # Grounding verification: of every string span the verifier checked against
+    # the source, what fraction was actually found there (verbatim, or repaired
+    # by snapping to a close real span)? Spans that survive as "flagged" are
+    # absent from the document — the model emitted a value it could not have
+    # read. populated/required rates can't see this: they only ask "is the
+    # field non-empty?", never "is it true?". grounding_pass_rate does.
+    grounding_verification_block: Dict[str, Any] = {}
+    if isinstance(grounding_stats, dict) and grounding_stats.get("checked"):
+        g_checked = int(grounding_stats.get("checked", 0) or 0)
+        g_verified = int(grounding_stats.get("verified", 0) or 0)
+        g_repaired = len(grounding_stats.get("repaired", []) or [])
+        g_flagged = len(grounding_stats.get("flagged", []) or [])
+        g_grounded = g_verified + g_repaired
+        grounding_verification_block = {
+            "grounding_checked": g_checked,
+            "grounding_verified": g_verified,
+            "grounding_repaired": g_repaired,
+            "grounding_flagged": g_flagged,
+            "grounding_pass_rate": round(g_grounded / g_checked, 4) if g_checked else None,
+        }
+
     return {
         "doc": doc_stem,
         "schema_title": schema_title,
@@ -278,5 +311,6 @@ def evaluate_extraction(
         "required_missing": required_stats["required_missing"],
         "parse_failure_count": parse_failure_count,
         **grounding_retry_block,
+        **grounding_verification_block,
         **(_compute_gt_metrics(data_payload, ground_truth) if ground_truth and not failed else {}),
     }

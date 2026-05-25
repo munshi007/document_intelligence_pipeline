@@ -104,6 +104,43 @@ def _drop_invalid_list_items(data: Dict[str, Any], model_type: Type[BaseModel]) 
     return cleaned
 
 
+def _grounding_summary(gr_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Build a light, inline trust header from the verifier's audit.
+
+    The full audit (provenance, per-field repairs, retry log) is persisted
+    separately in <stem>_grounding.json. Here we surface only what a consumer
+    of the extraction needs to judge trust at a glance: how many string spans
+    were checked against the source, how many grounded, and which values could
+    not be located there (``unverified`` — likely fabricated, since the
+    extractor never sees the page image and so cannot have read them).
+
+    Returns None when grounding did not run, so the caller can omit the key
+    rather than emit a misleading all-zero block.
+    """
+    if not isinstance(gr_stats, dict) or not gr_stats.get("checked"):
+        return None
+    checked = int(gr_stats.get("checked", 0) or 0)
+    verified = int(gr_stats.get("verified", 0) or 0)
+    repaired = len(gr_stats.get("repaired", []) or [])
+    flagged_list = gr_stats.get("flagged", []) or []
+    grounded = verified + repaired
+    return {
+        "checked": checked,
+        "verified": verified,
+        "repaired": repaired,
+        "flagged": len(flagged_list),
+        "pass_rate": round(grounded / checked, 4) if checked else None,
+        "unverified": [
+            {
+                "path": f.get("path"),
+                "value": f.get("value"),
+                "best_ratio": f.get("best_ratio"),
+            }
+            for f in flagged_list
+        ],
+    }
+
+
 def _load_discovery_meta(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(
@@ -221,13 +258,23 @@ def run_extract(
         dumped = _scrub_pydantic_undefined(final_record.model_dump())
         if isinstance(dumped, dict):
             dumped = _drop_invalid_list_items(dumped, response_model)
+
+        gr_stats = getattr(agent, "_last_grounding_stats", None)
+        # Inline, non-destructive trust header: keep every extracted value, but
+        # mark which ones the verifier could not locate in the source so a
+        # downstream consumer never has to trust a value blind. Full audit still
+        # goes to the <stem>_grounding.json sidecar below.
+        if isinstance(dumped, dict):
+            gsum = _grounding_summary(gr_stats)
+            if gsum is not None:
+                dumped["_grounding"] = gsum
+
         paths.extraction.write_text(
             json.dumps(dumped, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
         logger.info(f"[extract] wrote {paths.extraction.name}")
 
-        gr_stats = getattr(agent, "_last_grounding_stats", None)
         if gr_stats is not None:
             paths.grounding.write_text(
                 json.dumps(gr_stats, indent=2, ensure_ascii=False),
