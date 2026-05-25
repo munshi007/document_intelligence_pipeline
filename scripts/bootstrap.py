@@ -12,8 +12,8 @@ What it does, in order:
                      HF cache (catches a partial download or moved $HF_HOME
                      in seconds, without loading weights into VRAM).
   4. Smoke test    — runs the pipeline end-to-end on the committed sample PDFs
-                     (data/simple_invoice.pdf, data/Super_Complex_2.pdf) and
-                     checks that each produces a non-empty extraction.
+                     (data/PDFS/simple_invoice.pdf, data/PDFS/Super_Complex_2.pdf)
+                     and checks that each produces a non-empty extraction.
   5. Sentinel      — writes BOOTSTRAP_OK with a JSON summary that an examiner
                      can paste into a defence appendix.
 
@@ -38,8 +38,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_PDFS = [
-    PROJECT_ROOT / "data" / "simple_invoice.pdf",
-    PROJECT_ROOT / "data" / "Super_Complex_2.pdf",
+    PROJECT_ROOT / "data" / "PDFS" / "simple_invoice.pdf",
+    PROJECT_ROOT / "data" / "PDFS" / "Super_Complex_2.pdf",
 ]
 SMOKE_OUTPUT_DIR = PROJECT_ROOT / "output" / "bootstrap_smoke"
 SENTINEL_PATH = PROJECT_ROOT / "BOOTSTRAP_OK"
