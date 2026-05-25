@@ -271,7 +271,34 @@ class LocalTextProvider(BaseVLMProvider):
                         except Exception:
                             logger.error(f"Nuclear Recovery Failed: {final_e}")
                             continue
-        
+
+        # F. Schema-agnostic structural repair (last resort, only if nothing
+        # above produced valid JSON). Handles the failures the hand-rolled rules
+        # can't: a list left unclosed *mid-structure* before the next object key
+        # (greedy decoder drops the `]`), and runaway truncation. Unlike the
+        # segmented harvester above, json_repair makes no field-name assumptions,
+        # so it works for any discovered schema — no hardcoding.
+        if found_json is None:
+            try:
+                from json_repair import repair_json
+                # Drop any <thought>/prose preamble by starting at the first
+                # structural char; json_repair handles the rest.
+                obj_start = stripped.find("{")
+                arr_start = stripped.find("[")
+                starts = [i for i in (obj_start, arr_start) if i != -1]
+                repair_src = stripped[min(starts):] if starts else stripped
+                repaired_obj = repair_json(repair_src, return_objects=True)
+                ok = (
+                    (expected_type == "object" and isinstance(repaired_obj, dict))
+                    or (expected_type == "list" and isinstance(repaired_obj, list))
+                    or isinstance(repaired_obj, (dict, list))
+                )
+                if ok and repaired_obj:
+                    logger.warning("Recovered malformed JSON via json_repair fallback.")
+                    found_json = json.dumps(repaired_obj)
+            except Exception as repair_err:
+                logger.error(f"json_repair fallback failed: {repair_err}")
+
         if return_candidates:
             return found_json, candidates
         return found_json
