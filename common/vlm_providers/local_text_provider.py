@@ -217,67 +217,19 @@ class LocalTextProvider(BaseVLMProvider):
                             found_json = json.dumps(parsed)
                             break
                     except Exception as final_e:
-                        # E. Nuclear Segmented Recovery: Harvest individual { ... } objects using stack-based bracket matching
-                        try:
-                            # Clean up the most common array-breakers
-                            harvest_candidate = candidate.replace("...", "").replace(", ,", ",")
-                            
-                            # Nuclear Brace Harvester: Find every valid top-level or nested { } block
-                            parsed_segments = []
-                            stack = []
-                            start_idx = -1
-                            
-                            for idx, char in enumerate(harvest_candidate):
-                                if char == '{':
-                                    stack.append(idx)
-                                elif char == '}':
-                                    if stack:
-                                        start_pos = stack.pop()
-                                        # Only harvest top-level children or independent segments
-                                        # (Depth check ensures we don't accidentally grab tiny sub-objects while the 
-                                        # parent object is still potentially valid, unless we are in a truncated state).
-                                        segment = harvest_candidate[start_pos:idx+1]
-                                        # Repair mid-stream dangling commas in the segment
-                                        segment = re.sub(r',\s*([\]}])', r'\1', segment)
-                                        try:
-                                            # Validate the segment immediately
-                                            p = json.loads(segment)
-                                            if isinstance(p, dict):
-                                                # Check if this segment is worth keeping (has hardware keys)
-                                                if any(k in p for k in ["name", "product_name", "pins", "led"]):
-                                                    parsed_segments.append(p)
-                                        except:
-                                            # Final-character sub-repair
-                                            try:
-                                                repaired = re.sub(r',\s*$', '', segment[:-1].strip()) + '}'
-                                                p = json.loads(repaired)
-                                                if any(k in p for k in ["name", "product_name", "pins", "led"]):
-                                                    parsed_segments.append(p)
-                                            except:
-                                                continue
-                            
-                            if parsed_segments:
-                                # Reconstruct the Universal Hardware container
-                                reconstructed = {"identity": {}, "parameters": [], "connectors": [], "diagnostics": []}
-                                for p in parsed_segments:
-                                    if "name" in p and "value" in p: reconstructed["parameters"].append(p)
-                                    elif "product_name" in p: reconstructed["identity"] = p
-                                    elif "pins" in p: reconstructed["connectors"].append(p)
-                                    elif "led" in p: reconstructed["diagnostics"].append(p)
-                                
-                                if reconstructed["parameters"] or reconstructed["identity"]:
-                                    found_json = json.dumps(reconstructed)
-                                    break
-                        except Exception:
-                            logger.error(f"Nuclear Recovery Failed: {final_e}")
-                            continue
+                        # All per-candidate repairs (A–D) failed for this
+                        # candidate. Move on; the schema-agnostic json_repair
+                        # fallback below the loop is the final salvage and makes
+                        # no field-name assumptions (no hardcoding).
+                        logger.debug(f"Per-candidate JSON repair failed: {final_e}")
+                        continue
 
-        # F. Schema-agnostic structural repair (last resort, only if nothing
-        # above produced valid JSON). Handles the failures the hand-rolled rules
-        # can't: a list left unclosed *mid-structure* before the next object key
-        # (greedy decoder drops the `]`), and runaway truncation. Unlike the
-        # segmented harvester above, json_repair makes no field-name assumptions,
-        # so it works for any discovered schema — no hardcoding.
+        # E. Schema-agnostic structural repair (last resort, only if nothing
+        # above produced valid JSON). json_repair makes no field-name
+        # assumptions, so it works for any discovered schema. It fixes the
+        # failures the bracket-balancing rules can't: a list left unclosed
+        # *mid-structure* before the next object key (greedy decoder drops the
+        # `]`), and runaway truncation.
         if found_json is None:
             try:
                 from json_repair import repair_json
