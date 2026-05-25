@@ -61,8 +61,9 @@ IMAGES/
 
 # Data & outputs (whitelisted smoke-test docs are exceptions below) ------------
 data/*
-!data/simple_invoice.pdf
-!data/Super_Complex_2.pdf
+!data/PDFS/
+data/PDFS/*
+!data/PDFS/*.pdf
 output/
 TEST_LLM/
 
