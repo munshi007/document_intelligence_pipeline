@@ -827,11 +827,33 @@ Respond ONLY with a JSON object in exactly this shape:
         dyn_model = create_model(f"{root_name}WithMeta", __base__=dyn_model, **extra_fields)
         return dyn_model
     def synthesize_from_external_schema(self, schema_path: str) -> Type[BaseModel]:
-        """Loads a JSON schema from disk and synthesizes a Pydantic model."""
+        """Loads a JSON schema from disk and synthesizes a Pydantic model.
+
+        Handles `$ref` references to entries in the schema's `$defs` table so
+        that round-tripping a synthesised schema through disk (model.model_json_schema()
+        → JSON file → this function) preserves nested object types instead of
+        silently falling back to `str` for refs. Critical for the per-stage
+        CLI's disk handoff between discover-schema and extract.
+        """
         logger.info(f"DiscoveryAgent: Loading external schema from {schema_path}")
         with open(schema_path, 'r', encoding='utf-8') as f:
             schema_dict = json.load(f)
-            
+
+        # Root-level $defs table — populated by Pydantic when a model uses
+        # nested BaseModels (e.g. SourceEvidence). Without resolving these,
+        # any $ref in `items` would silently degrade to `List[str]`.
+        defs_table = schema_dict.get("$defs", {})
+        # Cache so a $def referenced twice produces ONE Pydantic class, which
+        # keeps Pydantic's validation messages and downstream isinstance checks
+        # consistent.
+        ref_cache: Dict[str, Type[BaseModel]] = {}
+
+        def resolve_ref(ref: str) -> Dict[str, Any]:
+            # Expected shape: "#/$defs/SourceEvidence"
+            if not ref.startswith("#/$defs/"):
+                return {}
+            return defs_table.get(ref[len("#/$defs/"):], {})
+
         def build_pydantic_model(schema: Dict[str, Any], model_name: str) -> Type[BaseModel]:
             type_mapping = {
                 "string": str,
@@ -841,23 +863,64 @@ Respond ONLY with a JSON object in exactly this shape:
                 "array": list,
                 "object": dict
             }
-            
+
+            def model_from_ref(ref: str) -> Type[BaseModel]:
+                if ref in ref_cache:
+                    return ref_cache[ref]
+                resolved = resolve_ref(ref)
+                if not resolved:
+                    # Unresolvable ref — fall back to Dict so we don't drop data.
+                    return dict  # type: ignore[return-value]
+                ref_name = ref.split("/")[-1]
+                built = build_pydantic_model(resolved, ref_name)
+                ref_cache[ref] = built
+                return built
+
             properties = schema.get("properties", {})
-            required = schema.get("required", [])
             fields = {}
-            
+
             for prop_name, prop_info in properties.items():
                 prop_type = prop_info.get("type")
                 description = prop_info.get("description", "")
-                
+
+                # Optional / Union: Pydantic serialises Optional[X] as
+                # {"anyOf": [<X>, {"type": "null"}]}. Resolve the non-null branch
+                # and wrap it Optional so e.g. Optional[float] round-trips instead
+                # of degrading to str (which then rejects the LLM's numeric values).
+                if "anyOf" in prop_info:
+                    branches = [b for b in prop_info["anyOf"] if b.get("type") != "null"]
+                    chosen = branches[0] if branches else {}
+                    if "$ref" in chosen:
+                        python_type = Optional[model_from_ref(chosen["$ref"])]
+                    elif chosen.get("type") == "array":
+                        ci = chosen.get("items", {})
+                        if "$ref" in ci:
+                            python_type = Optional[List[model_from_ref(ci["$ref"])]]
+                        elif ci.get("type") == "object":
+                            inner_name = "".join(x.capitalize() for x in prop_name.split("_")) + "Item"
+                            python_type = Optional[List[build_pydantic_model(ci, inner_name)]]
+                        else:
+                            python_type = Optional[List[type_mapping.get(ci.get("type", "string"), str)]]
+                    elif chosen.get("type") == "object":
+                        nested_name = "".join(x.capitalize() for x in prop_name.split("_")) + "Model"
+                        python_type = Optional[build_pydantic_model(chosen, nested_name)]
+                    else:
+                        python_type = Optional[type_mapping.get(chosen.get("type"), str)]
+                # Recursive Case: top-level $ref (rare on properties, common on items)
+                elif "$ref" in prop_info:
+                    python_type = model_from_ref(prop_info["$ref"])
+                    prop_type = "object"  # downstream defaulting below
                 # Recursive Case: Object
-                if prop_type == "object":
+                elif prop_type == "object":
                     nested_name = "".join(x.capitalize() for x in prop_name.split("_")) + "Model"
                     python_type = build_pydantic_model(prop_info, nested_name)
                 # Recursive Case: Array
                 elif prop_type == "array":
                     items = prop_info.get("items", {})
-                    if items.get("type") == "object":
+                    if "$ref" in items:
+                        inner_type = model_from_ref(items["$ref"])
+                        python_type = List[inner_type]
+                    elif items.get("type") == "object":
                         nested_name = "".join(x.capitalize() for x in prop_name.split("_")) + "Item"
                         inner_type = build_pydantic_model(items, nested_name)
                         python_type = List[inner_type]
@@ -866,15 +929,15 @@ Respond ONLY with a JSON object in exactly this shape:
                 # Base Case: Primitive
                 else:
                     python_type = type_mapping.get(prop_type, str)
-                
+
                 import re
                 def to_snake(name):
                     return re.sub(r'(?<!^)(?=[A-Z])', '_', name).lower()
-                
+
                 snake_name = to_snake(prop_name)
                 # Use AliasChoices to support both original and snake_case
                 v_alias = AliasChoices(prop_name, snake_name)
-                
+
                 # RELAXATION: Treat everything as Optional for LLM robustness
                 if prop_type == "array":
                     fields[prop_name] = (python_type, Field(default_factory=list, description=description, validation_alias=v_alias))
@@ -882,7 +945,7 @@ Respond ONLY with a JSON object in exactly this shape:
                     fields[prop_name] = (Optional[python_type], Field(None, description=description, validation_alias=v_alias))
                 else:
                     fields[prop_name] = (Optional[python_type], Field(None, description=description, validation_alias=v_alias))
-            
+
             return create_model(model_name, __base__=BaseModel, **fields)
 
         # Build the master model
