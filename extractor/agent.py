@@ -191,12 +191,13 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 {field_list}
 
 ### EXTRACTION RULES (STRICT):
-1. **SCHEMA IS LAW**: DO NOT use any fields from your internal knowledge (like 'art_no', 'parameters', or 'connectors'). USE ONLY the exact field names listed above.
-2. **STRUCTURAL INTEGRITY**: Your response MUST follow the field structure exactly as defined above at the root level.
-3. **NO HALLUCINATED WRAPPERS**: DO NOT wrap these fields in sub-objects like 'identity', 'metadata', or 'data' unless specified in the schema.
-4. **FULL COVERAGE**: Capture EVERY relevant row and data point from technical tables (like pin assignments).
-5. **CURRENCY INFERENCE**: When a `value` (or `amount` / `unit_price` / `total`) field contains a currency symbol, ALSO populate the sibling `currency` field: "$"→"USD", "€"→"EUR", "£"→"GBP", "¥"→"JPY". Keep the symbol in the value.
-6. **REASONING**: Briefly explain your extraction logic in the `reasoning_thoughts` field.
+1. **SOURCE FIDELITY (MOST IMPORTANT)**: Extract ONLY values that actually appear in the SOURCE CONTENT below. NEVER infer, complete, or add values from your own knowledge of what a typical {domain} document usually contains. If the source does not state a value, leave that field empty/null and omit the list item entirely — do NOT invent a plausible one. An empty-but-true result is correct; a complete-but-invented one is a failure.
+2. **SCHEMA IS LAW**: DO NOT use any fields from your internal knowledge (like 'art_no', 'parameters', or 'connectors'). USE ONLY the exact field names listed above.
+3. **STRUCTURAL INTEGRITY**: Your response MUST follow the field structure exactly as defined above at the root level.
+4. **NO HALLUCINATED WRAPPERS**: DO NOT wrap these fields in sub-objects like 'identity', 'metadata', or 'data' unless specified in the schema.
+5. **CAPTURE WHAT IS PRESENT**: Capture EVERY relevant row and data point that IS in the source — especially technical tables (like pin assignments). But never manufacture rows or values that are absent from the source (see Rule 1): completeness means missing nothing real, not filling everything in.
+6. **CURRENCY INFERENCE**: When a `value` (or `amount` / `unit_price` / `total`) field contains a currency symbol, ALSO populate the sibling `currency` field: "$"→"USD", "€"→"EUR", "£"→"GBP", "¥"→"JPY". Keep the symbol in the value.
+7. **REASONING**: Briefly explain your extraction logic in the `reasoning_thoughts` field.
 
 ### METADATA FIELDS (always populate when present in schema):
 - `page_references`: list of page numbers (integers) where the extracted facts appeared. The SOURCE CONTENT contains `<!-- page:N -->` markers — read them and include each page you drew evidence from.
@@ -1307,7 +1308,21 @@ SOURCE CONTENT:
                 result_dump = result.model_dump(exclude=excluded)
                 default_dump = response_model.model_construct().model_dump(exclude=excluded)
                 if result_dump != default_dump:
-                    return result
+                    # Route the single-shot result through the SAME finalization
+                    # (grounding verification, retry, provenance) the batched
+                    # path uses — so low-density docs are checked for fabrication
+                    # too, instead of returning unverified.
+                    return self._finalize_record(
+                        result,
+                        response_model=response_model,
+                        context_markdown=context_markdown,
+                        target_schema_json=target_schema_json,
+                        target_schema_name=target_schema_name,
+                        trace_context=trace_context,
+                        use_grounding=use_grounding,
+                        total_batches=1,
+                        batch_success_count=1,
+                    )
                 else:
                     logger.warning("Direct extraction returned empty. Falling through to One-Pass batched mode.")
             else:
@@ -1461,6 +1476,40 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
         # Synthesis pass to combine batch results into one master record
         master = self._synthesize_results(batch_results, response_model, domain)
 
+        return self._finalize_record(
+            master,
+            response_model=response_model,
+            context_markdown=context_markdown,
+            target_schema_json=target_schema_json,
+            target_schema_name=target_schema_name,
+            trace_context=trace_context,
+            use_grounding=use_grounding,
+            total_batches=len(batches),
+            batch_success_count=batch_success_count,
+        )
+
+    def _finalize_record(
+        self,
+        master: T,
+        *,
+        response_model: Type[T],
+        context_markdown: Optional[str],
+        target_schema_json: Optional[Dict[str, Any]],
+        target_schema_name: Optional[str],
+        trace_context: Optional[Dict[str, Any]],
+        use_grounding: bool,
+        total_batches: int,
+        batch_success_count: int,
+    ) -> T:
+        """Shared finalization for BOTH extraction paths (direct + batched).
+
+        Runs projection, currency inference, span-grounding verification,
+        flagged-value retry, provenance auto-fill, and sets
+        self._last_grounding_stats. Centralizing this guarantees the single-shot
+        direct path is verified identically to the batched path — it previously
+        returned early and skipped grounding, leaving low-density docs unchecked
+        for fabrication.
+        """
         # Grounding pass for high-precision evidence (optional)
         if use_grounding:
             self._ground_with_langextract(master, context_markdown or "")
@@ -1583,7 +1632,7 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
                 "status": "success",
                 "schema": target_schema_name or response_model.__name__,
                 "batch_success_count": batch_success_count,
-                "total_batches": len(batches),
+                "total_batches": total_batches,
                 "populated_fields_count": final_quality["populated_fields_count"],
                 "required_fields_missing": final_quality["required_fields_missing"],
             },
