@@ -18,7 +18,7 @@ This is a thesis artifact. Reproducibility is treated as a first-class concern: 
 | `environment.yml` | Pinned Python + CUDA + ML-stack versions (single source of truth for deps). |
 | `config/models.yaml` | HuggingFace asset manifest with revision SHAs — every model is fetched at the exact commit used in the thesis. |
 | `scripts/bootstrap.py` | One-shot preflight + model download + smoke test, writes a `BOOTSTRAP_OK` sentinel summarising the run. |
-| `data/simple_invoice.pdf`, `data/Super_Complex_2.pdf` | Committed smoke-test documents covering Invoice and Logistics domains. |
+| `data/PDFS/*.pdf` | Ten committed smoke-test / regression PDFs (invoices, industrial datasheets, complex tables). Bootstrap smoke-tests `simple_invoice.pdf` (Invoice) and `Super_Complex_2.pdf` (Industrial). |
 
 ---
 
@@ -57,11 +57,11 @@ If the script exits 0, the repo is reproducibly installed. After that, use `run_
 
 After bootstrap succeeds, run the pipeline on any PDF. The system auto-discovers the document's domain, synthesises a schema, and emits structured JSON.
 
-> **Bring your own documents:** drop any PDF into the `data/` directory (or pass an absolute path) — `data/` is gitignored except for the two committed smoke docs, so your own files stay local and never get committed by accident.
+> **Bring your own documents:** drop any PDF into `data/` (or pass an absolute path). The committed test set lives in `data/PDFS/`; everything else under `data/` is gitignored, so your own files stay local and never get committed by accident.
 
 ### Basic extraction (recommended)
 ```bash
-python run_v3.py data/simple_invoice.pdf \
+python run_v3.py data/PDFS/simple_invoice.pdf \
     --extract \
     --schema_mode auto \
     --output_dir output/my_run
@@ -70,7 +70,7 @@ python run_v3.py data/simple_invoice.pdf \
 ### Following progress live
 The pipeline logs to stderr. To follow progress and keep a transcript, redirect to a file you can `tail -f`:
 ```bash
-python run_v3.py data/simple_invoice.pdf --extract --schema_mode auto \
+python run_v3.py data/PDFS/simple_invoice.pdf --extract --schema_mode auto \
     --output_dir output/my_run 2>&1 | tee output/my_run/run.log
 # in another terminal:
 tail -f output/my_run/run.log
@@ -79,7 +79,7 @@ tail -f output/my_run/run.log
 ### With debug traces
 Saves every batch prompt, raw VLM output, and parse-failure log:
 ```bash
-python run_v3.py data/simple_invoice.pdf \
+python run_v3.py data/PDFS/simple_invoice.pdf \
     --extract \
     --schema_mode auto \
     --save_debug_traces \
@@ -89,12 +89,45 @@ python run_v3.py data/simple_invoice.pdf \
 ### With a fixed schema
 If you need the output to conform to a strict pre-defined contract:
 ```bash
-python run_v3.py data/simple_invoice.pdf \
+python run_v3.py data/PDFS/simple_invoice.pdf \
     --extract \
     --schema_mode explicit \
     --schema_path my_custom_schema.json \
     --output_dir output/explicit_run
 ```
+
+---
+
+## Modular CLI — run one stage at a time
+
+`run_v3.py` above runs the whole pipeline in one shot. The same pipeline is also exposed as a **per-stage CLI**, where each stage is its own subcommand — useful for debugging, re-running a single stage, or feeding a downstream tool the intermediate artifacts:
+
+```bash
+python -m cli run-all data/PDFS/simple_invoice.pdf --extract   # full pipeline
+python -m cli pdf-to-layout data/PDFS/simple_invoice.pdf        # just one stage
+```
+
+(`python cli.py <subcommand>` is equivalent.)
+
+| Subcommand | Stage | Loads |
+|---|---|---|
+| `pdf-to-layout` | 1 · detect layout regions | Vision model |
+| `pdf-to-markdown` | 2 · structured Markdown + manifest | Vision model |
+| `md-to-graph` | 3 · Hierarchical Knowledge Graph | Vision model |
+| `discover-schema` | 4 · synthesise the extraction schema | Text model |
+| `extract` | 5 · extract structured JSON | Text model |
+| `pdf-to-graph` | *composite:* stages 1–3 in one process | Vision model |
+| `discover-and-extract` | *composite:* stages 4–5 in one process | Text model |
+| `run-all` | every stage, end-to-end | both (isolated) |
+
+**Two behaviours make the stages composable:**
+
+- **Smart-skip** — a stage reuses existing output instead of recomputing it. Pass `--force` to recompute.
+- **Auto-chain** — call any stage and its missing prerequisites run automatically. e.g. `extract` on a fresh PDF transparently runs layout → markdown → graph → discovery first.
+
+**GPU isolation:** `run-all` chains the work as two subprocess groups — `pdf-to-graph` (Vision) then `discover-and-extract` (Text) — so the two models never share VRAM in the same Python process. Those composite subcommands are exactly those groups, and are runnable on their own.
+
+Common flags: `--output-dir/-o`, `--schema-mode auto|explicit`, `--schema-path`, `--with-grounding`, `--save-debug-traces`, `--max-pages`, `--debug`, `--force`.
 
 ---
 
@@ -119,7 +152,13 @@ Where everything lives in the codebase:
 
 ```text
 document_intelligence_pipeline/
-├── run_v3.py                       # MAIN ENTRY POINT: pipeline orchestrator
+├── run_v3.py                       # One-shot entry point (monolithic orchestrator)
+├── cli.py                          # Per-stage CLI (`python -m cli <stage>`)
+├── stages/                         # One module per pipeline stage
+│   ├── layout.py, markdown.py, graph.py   # Vision-model stages (1–3)
+│   ├── discovery.py, extract.py           # Text-model stages (4–5)
+│   ├── orchestrate.py              # In-process stage-group runners (Vision / Text)
+│   └── serialize.py, paths.py      # Shared serialisation + canonical output paths
 ├── environment.yml                 # Pinned conda env (reproducibility anchor)
 ├── pyproject.toml                  # Package metadata (no deps — see environment.yml)
 ├── config/
@@ -157,9 +196,10 @@ document_intelligence_pipeline/
 │   ├── distillation_agent.py       # Teacher → Student distillation orchestrator
 │   ├── batch_distill.py            # Batched distillation runs over corpora
 │   └── benchmarks/                 # Small-VLM comparison benchmarks
-├── data/                           # Drop your own PDFs here (gitignored except the two smoke docs)
-│   ├── simple_invoice.pdf          # Smoke-test doc 1 (Invoice domain)
-│   └── Super_Complex_2.pdf         # Smoke-test doc 2 (Logistics domain)
+├── data/                           # Drop your own PDFs here (gitignored except data/PDFS/)
+│   └── PDFS/                       # Committed test set — 10 PDFs, clone-and-run
+│       ├── simple_invoice.pdf      # Smoke-test doc 1 (Invoice domain)
+│       └── Super_Complex_2.pdf     # Smoke-test doc 2 (Industrial datasheet)
 └── output/                         # Created on first run (gitignored)
 ```
 

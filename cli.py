@@ -8,15 +8,15 @@ top-level `run-all` orchestrator subprocess-chain the natural stage groups
 so the Vision and Text models never share VRAM in the same Python process.
 
 Usage:
-    python -m cli run-all data/sample.pdf
-    python -m cli run-all data/sample.pdf --extract --with-grounding
-    python -m cli pdf-to-layout data/sample.pdf
-    python -m cli pdf-to-markdown data/sample.pdf       # auto-runs layout if needed
-    python -m cli md-to-graph data/sample.pdf
-    python -m cli discover-schema data/sample.pdf
-    python -m cli extract data/sample.pdf
-    python -m cli pdf-to-graph data/sample.pdf          # composite: layout+md+graph
-    python -m cli discover-and-extract data/sample.pdf  # composite: discovery+extract
+    python -m cli run-all data/PDFS/simple_invoice.pdf
+    python -m cli run-all data/PDFS/simple_invoice.pdf --extract --with-grounding
+    python -m cli pdf-to-layout data/PDFS/simple_invoice.pdf
+    python -m cli pdf-to-markdown data/PDFS/simple_invoice.pdf       # auto-runs layout if needed
+    python -m cli md-to-graph data/PDFS/simple_invoice.pdf
+    python -m cli discover-schema data/PDFS/simple_invoice.pdf
+    python -m cli extract data/PDFS/simple_invoice.pdf
+    python -m cli pdf-to-graph data/PDFS/simple_invoice.pdf          # composite: layout+md+graph
+    python -m cli discover-and-extract data/PDFS/simple_invoice.pdf  # composite: discovery+extract
 """
 from __future__ import annotations
 
