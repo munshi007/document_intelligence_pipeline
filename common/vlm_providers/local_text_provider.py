@@ -257,93 +257,20 @@ class LocalTextProvider(BaseVLMProvider):
 
     @staticmethod
     def _map_hallucinated_fields(partial: Dict[str, Any], response_model: Type) -> Dict[str, Any]:
-        """Maps model output keys to schema field names and reshapes flat lists to nested objects."""
+        """Re-key model output whose keys drifted from the schema field names.
+
+        Schema-agnostic: the only knowledge used is the target model's own
+        ``model_fields`` -- no per-document field names or shapes are hardcoded.
+        When the model emits a key that is a substring of a schema field (or
+        vice-versa), e.g. ``parameters`` -> ``technical_parameters``, or a
+        decode typo like ``connectorsors`` -> ``connectors``, and the real
+        field is still empty, move the value onto the schema key so it is not
+        dropped during validation.
+        """
         schema_fields = list(response_model.model_fields.keys())
-        model_keys = list(partial.keys())
-        
-        # 1. Synonym Mapping
-        synonyms = {
-            "art_no": ["articleNumber", "article_number"],
-            "product_name": ["moduleName", "deviceName", "device_name"],
-            "connectors": ["ports", "connections"],
-            "pins": ["pinAssignments", "pinout"],
-            "parameters": ["technicalData", "specifications"]
-        }
-        
-        for m_key in model_keys:
-            if m_key in schema_fields: continue
-            if m_key in synonyms:
-                for s_cand in synonyms[m_key]:
-                    if s_cand in schema_fields:
-                        if partial.get(s_cand) is None or partial.get(s_cand) == []:
-                            logger.info(f"Synonym Mapping: '{m_key}' -> '{s_cand}'")
-                            partial[s_cand] = partial.pop(m_key)
-                            break
-
-        # 2. Structural Reshaping (List -> Object)
-        # If model returned a list for 'ports' but schema expects an object with specific sub-keys
-        if "ports" in partial and isinstance(partial["ports"], list):
-            port_field = response_model.model_fields.get("ports")
-            if port_field:
-                # Unwrap Optional/Union to get the actual model class
-                ann = port_field.annotation
-                if hasattr(ann, "__args__"):
-                    ann = ann.__args__[0]
-                
-                if hasattr(ann, "model_fields"):
-                    logger.info("Reshaping flat 'ports' list into structured object...")
-                    original_list = partial.pop("ports")
-                    new_ports = {}
-                    new_pin_assignments = {}
-                    sub_keys = ann.model_fields.keys()
-                    
-                    for item in original_list:
-                        if not isinstance(item, dict): continue
-                        name = str(item.get("name", "")).lower()
-                        # Heuristic routing
-                        target_key = None
-                        if "input" in name: target_key = "inputPort"
-                        elif "output" in name: target_key = "outputPort"
-                        elif "multi" in name or "multifunctional" in name: target_key = "multifunctionalPort"
-                        
-                        if target_key and target_key in sub_keys:
-                            # 1. Lift and Translate pins to pinAssignments if needed
-                            if "pins" in item:
-                                pins = item.pop("pins")
-                                if isinstance(pins, list):
-                                    # Translate pin sub-keys
-                                    for p_item in pins:
-                                        if not isinstance(p_item, dict): continue
-                                        # Map model 'pin' or 'number' to 'pinNumber'
-                                        if "pin" in p_item: p_item["pinNumber"] = p_item.pop("pin")
-                                        if "number" in p_item: p_item["pinNumber"] = p_item.pop("number")
-                                        # Map model 'signal' or 'assignment' to 'function'
-                                        if "signal" in p_item: p_item["function"] = p_item.pop("signal")
-                                        if "assignment" in p_item: p_item["function"] = p_item.pop("assignment")
-                                    new_pin_assignments[target_key] = pins
-                            
-                            # 2. Translate model keys to schema keys
-                            mapping = {
-                                "type": "connectorType",
-                                "gender": "connectorGender",
-                                "coding": "connectorCoding"
-                            }
-                            for m_sub, s_sub in mapping.items():
-                                if m_sub in item: item[s_sub] = item.pop(m_sub)
-                            
-                            # 3. Derive pinCount if missing
-                            if target_key in new_pin_assignments:
-                                item["pinCount"] = len(new_pin_assignments[target_key])
-                            
-                            new_ports[target_key] = item
-                    
-                    partial["ports"] = new_ports
-                    if new_pin_assignments and "pinAssignments" in schema_fields:
-                        partial["pinAssignments"] = new_pin_assignments
-
-        # 3. Fuzzy/Substring Check (Final Pass)
         for m_key in list(partial.keys()):
-            if m_key in schema_fields: continue
+            if m_key in schema_fields:
+                continue
             for s_key in schema_fields:
                 if (m_key in s_key or s_key in m_key) and len(m_key) > 4:
                     if partial.get(s_key) is None:
@@ -353,46 +280,23 @@ class LocalTextProvider(BaseVLMProvider):
         return partial
 
     @staticmethod
-    def _normalize_common_schema_values(partial: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize frequent model typos before Pydantic validation.
+    def _first_list_field(response_model: Type) -> Optional[str]:
+        """Name of the first list-typed field in the schema, or None.
 
-        Keeps behavior conservative: only fix values that are very likely intent-preserving.
+        Used to route a bare top-level list (model dropped the wrapper
+        object) into the right field without hardcoding a field name.
         """
-        try:
-            params = partial.get("parameters")
-            if isinstance(params, list):
-                # Standard mapping
-                typo_map = {
-                    "mechnaical": "mechanical",
-                    "mechnical": "mechanical",
-                    "mechanicalcal": "mechanical",
-                    "electrial": "electrical",
-                    "electricalal": "electrical",
-                    "enviromental": "environmental",
-                    "enviornmental": "environmental",
-                    "logisitical": "logistical",
-                    "logistic": "logistical",
-                }
-                valid_types = {"electrical", "mechanical", "environmental", "logistical"}
-                
-                for p in params:
-                    if not isinstance(p, dict):
-                        continue
-                    raw = p.get("param_type")
-                    if isinstance(raw, str):
-                        k = raw.strip().lower()
-                        # Level 1: Standard typos
-                        if k in typo_map:
-                            p["param_type"] = typo_map[k]
-                        # Level 2: Fuzzy matching for repetitive suffixes (e.g. 'mechanicalcal')
-                        elif k not in valid_types:
-                            for valid in valid_types:
-                                if k.startswith(valid):
-                                    p["param_type"] = valid
-                                    break
-        except Exception:
-            pass
-        return partial
+        import typing
+        for field_name, field_info in response_model.model_fields.items():
+            ann = field_info.annotation
+            origin = typing.get_origin(ann)
+            if origin is list:
+                return field_name
+            if origin is typing.Union:
+                for arg in typing.get_args(ann):
+                    if typing.get_origin(arg) is list:
+                        return field_name
+        return None
 
     @staticmethod
     def _coerce_list_fields(partial: Dict[str, Any], response_model: Type) -> Dict[str, Any]:
@@ -574,13 +478,18 @@ SCHEMA:
                         if not _p1_orig:
                             _p1_orig = {}
                         else:
-                            # Heuristic: Find first list field in schema and put it there
-                            _p1_orig = {"parameters": _p1_orig}
+                            # Route the bare list into the schema's first
+                            # list-typed field (schema-agnostic; no hardcoded
+                            # field name). This also recovers data on
+                            # non-hardware schemas (e.g. a logistics doc whose
+                            # list belongs in 'charges'), which the old
+                            # hardcoded 'parameters' key silently dropped.
+                            _lf = self._first_list_field(response_model)
+                            _p1_orig = {_lf: _p1_orig} if _lf else {}
                     
                     _p1 = self._map_hallucinated_fields(_p1_orig, response_model)
                     _p1 = self._coerce_list_fields(_p1, response_model)
                     _p1 = self._coerce_type_mismatches(_p1, response_model)
-                    _p1 = self._normalize_common_schema_values(_p1)
                     return response_model.model_validate(_p1)
                 except Exception as ve:
                     logger.error(f"Pydantic Validation Error: {ve}")
@@ -612,7 +521,6 @@ RAW OUTPUT:
                     _p2 = self._map_hallucinated_fields(json.loads(repaired_payload), response_model)
                     _p2 = self._coerce_list_fields(_p2, response_model)
                     _p2 = self._coerce_type_mismatches(_p2, response_model)
-                    _p2 = self._normalize_common_schema_values(_p2)
                     return response_model.model_validate(_p2)
                 except Exception as ve:
                     logger.warning(f"Repair validation failed: {ve}")
@@ -640,7 +548,6 @@ RAW OUTPUT:
                     partial = self._coerce_list_fields(partial, response_model)
                     partial = self._map_hallucinated_fields(partial, response_model)
                     partial = self._coerce_type_mismatches(partial, response_model)
-                    partial = self._normalize_common_schema_values(partial)
                     try:
                         return response_model.model_validate(partial)
                     except Exception:
