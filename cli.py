@@ -25,7 +25,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 
@@ -69,6 +69,18 @@ def _setup_logging() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+def _parse_hint_fields(raw: Optional[str]) -> Optional[List[str]]:
+    """Convert a comma-separated --hint-fields string into a clean list.
+
+    Returns None when the flag wasn't supplied (or was empty after stripping),
+    so downstream code can branch on `if hint_fields:` cleanly.
+    """
+    if not raw:
+        return None
+    fields = [f.strip() for f in raw.split(",") if f.strip()]
+    return fields or None
+
+
 # ────────────────────────── auto-chain helpers ──────────────────────────
 # Each _ensure_* helper guarantees its stage's primary outputs exist by
 # running prior stages in-process if necessary. Used by individual stage
@@ -105,6 +117,7 @@ def _ensure_discovery(
     extractor_model: str,
     schema_mode: str,
     schema_path: Optional[str],
+    hint_fields: Optional[List[str]] = None,
 ):
     """Returns (DiscoveryResult, response_model) when a fresh discovery just
     ran in this process, otherwise None. Lets the caller forward the live
@@ -118,6 +131,7 @@ def _ensure_discovery(
         extractor_model=extractor_model,
         schema_mode=schema_mode,
         schema_path=schema_path,
+        hint_fields=hint_fields,
     )
 
 
@@ -183,6 +197,12 @@ def cmd_discover_schema(
                                     help="auto | explicit"),
     schema_path: Optional[str] = typer.Option(None, "--schema-path",
                                               help="JSON schema path for --schema-mode explicit"),
+    hint_fields: Optional[str] = typer.Option(
+        None, "--hint-fields",
+        help="Comma-separated field names to forcibly include in the schema "
+             "as Optional[str] (e.g. 'vendor,warranty,part_number'). They will "
+             "appear in extraction output as null if absent from the document.",
+    ),
     max_pages: Optional[int] = typer.Option(None, "--max-pages"),
     debug: bool = typer.Option(False, "--debug"),
     force: bool = typer.Option(False, "--force"),
@@ -198,6 +218,7 @@ def cmd_discover_schema(
         extractor_model=extractor_model,
         schema_mode=schema_mode,
         schema_path=schema_path,
+        hint_fields=_parse_hint_fields(hint_fields),
         force=force,
     )
 
@@ -212,6 +233,12 @@ def cmd_extract(
                                     help="auto | explicit"),
     schema_path: Optional[str] = typer.Option(None, "--schema-path",
                                               help="JSON schema path for --schema-mode explicit"),
+    hint_fields: Optional[str] = typer.Option(
+        None, "--hint-fields",
+        help="Comma-separated field names to forcibly include in the schema "
+             "as Optional[str]. Honored when discovery runs in this invocation; "
+             "on a smart-skip path you'll be warned to pass --force.",
+    ),
     with_grounding: bool = typer.Option(False, "--with-grounding"),
     save_debug_traces: bool = typer.Option(False, "--save-debug-traces"),
     distill: bool = typer.Option(False, "--distill"),
@@ -227,6 +254,7 @@ def cmd_extract(
         vlm_model=vlm_model, max_pages=max_pages, debug=debug,
         extractor_model=extractor_model,
         schema_mode=schema_mode, schema_path=schema_path,
+        hint_fields=_parse_hint_fields(hint_fields),
     )
     response_model = discover_out[1] if discover_out is not None else None
     run_extract(
@@ -273,6 +301,11 @@ def cmd_discover_and_extract(
     extractor_model: str = typer.Option(DEFAULT_EXTRACTOR, "--extractor-model"),
     schema_mode: str = typer.Option("auto", "--schema-mode"),
     schema_path: Optional[str] = typer.Option(None, "--schema-path"),
+    hint_fields: Optional[str] = typer.Option(
+        None, "--hint-fields",
+        help="Comma-separated field names to forcibly include in the schema "
+             "as Optional[str] (e.g. 'vendor,warranty,part_number').",
+    ),
     with_grounding: bool = typer.Option(False, "--with-grounding"),
     save_debug_traces: bool = typer.Option(False, "--save-debug-traces"),
     distill: bool = typer.Option(False, "--distill"),
@@ -285,6 +318,7 @@ def cmd_discover_and_extract(
         pdf, paths,
         extractor_model=extractor_model,
         schema_mode=schema_mode, schema_path=schema_path,
+        hint_fields=_parse_hint_fields(hint_fields),
         with_grounding=with_grounding,
         save_debug_traces=save_debug_traces,
         distill=distill,
@@ -305,6 +339,11 @@ def cmd_run_all(
     extractor_model: str = typer.Option(DEFAULT_EXTRACTOR, "--extractor-model"),
     schema_mode: str = typer.Option("auto", "--schema-mode"),
     schema_path: Optional[str] = typer.Option(None, "--schema-path"),
+    hint_fields: Optional[str] = typer.Option(
+        None, "--hint-fields",
+        help="Comma-separated field names to forcibly include in the schema "
+             "as Optional[str]. Forwarded to the extract subprocess.",
+    ),
     with_grounding: bool = typer.Option(False, "--with-grounding"),
     save_debug_traces: bool = typer.Option(False, "--save-debug-traces"),
     distill: bool = typer.Option(False, "--distill"),
@@ -347,6 +386,7 @@ def cmd_run_all(
         "--schema-mode", schema_mode,
     ]
     if schema_path:         group2 += ["--schema-path", schema_path]
+    if hint_fields:         group2 += ["--hint-fields", hint_fields]
     if with_grounding:      group2.append("--with-grounding")
     if save_debug_traces:   group2.append("--save-debug-traces")
     if distill:             group2.append("--distill")

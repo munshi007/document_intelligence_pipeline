@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from stages.discovery import DEFAULT_EXTRACTOR, run_discover_schema
 from stages.extract import run_extract
@@ -65,6 +65,7 @@ def run_extract_group(
     extractor_model: str = DEFAULT_EXTRACTOR,
     schema_mode: str = "auto",
     schema_path: Optional[str] = None,
+    hint_fields: Optional[List[str]] = None,
     with_grounding: bool = False,
     save_debug_traces: bool = False,
     distill: bool = False,
@@ -86,6 +87,7 @@ def run_extract_group(
         extractor_model=extractor_model,
         schema_mode=schema_mode,
         schema_path=schema_path,
+        hint_fields=hint_fields,
         force=force,
     )
     response_model = discover_out[1] if discover_out is not None else None
