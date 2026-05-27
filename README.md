@@ -96,6 +96,18 @@ python run_v3.py data/PDFS/simple_invoice.pdf \
     --output_dir output/explicit_run
 ```
 
+### With hint fields (force-include specific fields)
+When you want auto-discovery **plus** a guarantee that certain fields appear in the output — populated when the document supplies them, `null` when it doesn't:
+```bash
+python run_v3.py data/PDFS/simple_invoice.pdf \
+    --extract \
+    --schema_mode auto \
+    --hint_fields "vendor_tax_id,warranty_period,part_number" \
+    --output_dir output/hint_run
+```
+
+Each hinted field is injected into the discovered schema as `Optional[str]`. The LLM is told the field exists and tries to fill it from the document; if it's truly absent, the output value is `null`. Use this when you want a stable output contract without writing a full JSON schema — for complete control over types and nested structures, use `--schema_mode explicit --schema_path …` instead.
+
 ---
 
 ## Modular CLI — run one stage at a time
@@ -127,7 +139,9 @@ python -m cli pdf-to-layout data/PDFS/simple_invoice.pdf        # just one stage
 
 **GPU isolation:** `run-all` chains the work as two subprocess groups — `pdf-to-graph` (Vision) then `discover-and-extract` (Text) — so the two models never share VRAM in the same Python process. Those composite subcommands are exactly those groups, and are runnable on their own.
 
-Common flags: `--output-dir/-o`, `--schema-mode auto|explicit`, `--schema-path`, `--with-grounding`, `--save-debug-traces`, `--max-pages`, `--debug`, `--force`.
+Common flags: `--output-dir/-o`, `--schema-mode auto|explicit`, `--schema-path`, `--hint-fields`, `--with-grounding`, `--save-debug-traces`, `--max-pages`, `--debug`, `--force`.
+
+`--hint-fields` accepts a comma-separated list (e.g. `--hint-fields "vendor,warranty,part_number"`) and forces those fields into the discovered schema as `Optional[str]` — they'll appear in the extraction output, populated if found in the document or `null` if absent. Honored at the discovery stage; if discovery artifacts already exist on disk you'll be warned to pass `--force` to re-discover.
 
 ---
 

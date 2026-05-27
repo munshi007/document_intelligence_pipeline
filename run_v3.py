@@ -52,6 +52,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    default="auto", help="Schema routing mode (domain is treated as auto).")
     p.add_argument("--schema_path", type=str, default=None,
                    help="Path to explicit extraction schema JSON (used with --schema_mode explicit)")
+    p.add_argument("--hint_fields", type=str, default=None,
+                   help="Comma-separated field names to force-include in the discovered "
+                        "schema as Optional[str] (e.g. 'vendor,warranty,part_number'). "
+                        "Populated if present in the document, null if absent.")
     p.add_argument("--save_debug_traces", action="store_true",
                    help="Create debug trace directory for extraction diagnostics")
     p.add_argument("--evaluate", action="store_true",
@@ -110,6 +114,7 @@ def main() -> int:
     if args.debug:             cmd.append("--debug")
     if args.max_pages:         cmd += ["--max-pages", str(args.max_pages)]
     if args.schema_path:       cmd += ["--schema-path", args.schema_path]
+    if args.hint_fields:       cmd += ["--hint-fields", args.hint_fields]
 
     logger.info(f"Delegating to: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))

@@ -17,6 +17,8 @@ Usage:
     python -m cli extract data/PDFS/simple_invoice.pdf
     python -m cli pdf-to-graph data/PDFS/simple_invoice.pdf          # composite: layout+md+graph
     python -m cli discover-and-extract data/PDFS/simple_invoice.pdf  # composite: discovery+extract
+    python -m cli discover-and-extract data/PDFS/simple_invoice.pdf \\
+        --hint-fields "vendor_tax_id,warranty_period"                # force-include extra fields
 """
 from __future__ import annotations
 
