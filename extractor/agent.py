@@ -453,17 +453,35 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         target_schema_json: Dict[str, Any],
         context_markdown: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Project model output into a runtime schema contract with light heuristics."""
+        """Reshape model output to the runtime schema contract — structural only.
+
+        This pass copies what the extractor already produced into the exact
+        field names the target schema declares, applying ONLY domain-agnostic
+        structural reshaping:
+
+          - direct passthrough when the model already emitted the field
+          - well-known synonym passthrough (summary ↔ reasoning_thoughts)
+          - structural carry-through / transforms over already-extracted
+            material (document_title from the model's `identity.title`;
+            line_items derived from the model's extracted tables; entities
+            and tables_markdown carried through)
+
+        It NEVER guesses a field's value from the raw document via field-name
+        keyed regexes or string matches. That responsibility belongs to the
+        source-grounded retry pass (`_retry_flagged_and_null_strings`), which
+        is schema-agnostic and verifies every filled value against the source
+        before accepting it. Any field left empty here flows to that pass
+        downstream — so removing the old per-field heuristic ladder (which
+        baked in document-specific vendor names and domain-biased number
+        regexes) costs us nothing but the fabrication risk it carried.
+        """
         properties = (target_schema_json or {}).get("properties", {})
         if not isinstance(properties, dict) or not properties:
             return source_payload
 
-        text = context_markdown or ""
         identity = source_payload.get("identity") if isinstance(source_payload.get("identity"), dict) else {}
         entities = source_payload.get("entities") if isinstance(source_payload.get("entities"), list) else []
         tables_markdown = source_payload.get("tables_markdown") if isinstance(source_payload.get("tables_markdown"), list) else []
-
-        org_entities = [e.get("name") for e in entities if isinstance(e, dict) and str(e.get("category", "")).upper() == "ORG" and e.get("name")]
 
         out: Dict[str, Any] = {}
         for field_name, field_schema in properties.items():
@@ -472,55 +490,19 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                 out[field_name] = direct
                 continue
 
+            # Structural-only reshaping of material the model already produced.
+            # No raw-document content guessing lives here by design.
             inferred = None
             if field_name == "document_title":
-                inferred = identity.get("title") or ("Quotation" if re.search(r"\bquotation\b", text, re.IGNORECASE) else None)
+                inferred = identity.get("title")
             elif field_name == "summary":
                 inferred = source_payload.get("summary") or source_payload.get("reasoning_thoughts")
-            elif field_name == "supplier":
-                inferred = org_entities[0] if len(org_entities) >= 1 else None
-            elif field_name == "recipient":
-                inferred = org_entities[1] if len(org_entities) >= 2 else None
-            elif field_name == "quotation_number":
-                # Require at least one digit in the captured value to avoid
-                # matching plain words like "Validity" from "Quotation Validity Date"
-                m = re.search(
-                    r"\bquotation\s*(?:no\.?|#|number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-_/]*\d[A-Z0-9-_/]*)",
-                    text, re.IGNORECASE
-                )
-                if not m:
-                    # Fallback: explicit separator (colon or hash) follows the word "quotation"
-                    m = re.search(r"\bquotation\s*[:#]\s*([A-Z0-9][A-Z0-9-_/]+)", text, re.IGNORECASE)
-                inferred = m.group(1) if m else None
-            elif field_name == "invoice_number":
-                m = re.search(r"\binvoice\s*(?:no\.?|number)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9-_/]*)", text, re.IGNORECASE)
-                inferred = m.group(1) if m else None
-            elif field_name == "currency":
-                m = re.search(r"\b(USD|EUR|GBP|INR|JPY|CNY)\b", text, re.IGNORECASE)
-                inferred = m.group(1).upper() if m else None
             elif field_name == "line_items":
                 inferred = self._extract_line_items_from_tables(tables_markdown)
             elif field_name == "entities":
                 inferred = entities
             elif field_name == "tables_markdown":
                 inferred = tables_markdown
-            elif field_name == "product_name":
-                # Fallback: Look for the first major header
-                m = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-                if not m:
-                    # Alternative: Look for 'Product-PDF for Article...' header
-                    m = re.search(r"Product-PDF for Article\s+[A-Z0-9-]+\s*\n+(.+)", text)
-                inferred = m.group(1).strip() if m else None
-            elif field_name == "art_no":
-                # Fallback: Article number pattern (flexible)
-                m = re.search(r"(?:Art\.-No\.|Article|Part No\.)\s*[:#-]?\s*([A-Z0-9][A-Z0-9\.-]{5,})", text, re.IGNORECASE)
-                inferred = m.group(1).strip() if m else None
-            elif field_name == "manufacturer":
-                # Typical manufacturers in these docs
-                if "Murrelektronik" in text:
-                    inferred = "Murrelektronik"
-                elif "Pepperl+Fuchs" in text:
-                    inferred = "Pepperl+Fuchs"
 
             if self._is_non_empty(inferred):
                 out[field_name] = inferred
@@ -1514,8 +1496,10 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
         if use_grounding:
             self._ground_with_langextract(master, context_markdown or "")
 
-        # Refinement Pass: Apply heuristics for missing critical fields (Product Name, Art-No)
-        # using the context markdown if the generative extraction missed them.
+        # Projection pass: reshape the model output into the target schema's
+        # exact field names (structural only — no raw-document content
+        # guessing). Missing fields are left empty here and recovered, if at
+        # all, by the source-grounded retry below.
         master_dict = master.model_dump()
         refined_dict = self.project_to_schema(
             source_payload=master_dict,
