@@ -192,7 +192,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 
 ### EXTRACTION RULES (STRICT):
 1. **SOURCE FIDELITY (MOST IMPORTANT)**: Extract ONLY values that actually appear in the SOURCE CONTENT below. NEVER infer, complete, or add values from your own knowledge of what a typical {domain} document usually contains. If the source does not state a value, leave that field empty/null and omit the list item entirely — do NOT invent a plausible one. An empty-but-true result is correct; a complete-but-invented one is a failure.
-2. **SCHEMA IS LAW**: DO NOT use any fields from your internal knowledge (like 'art_no', 'parameters', or 'connectors'). USE ONLY the exact field names listed above.
+2. **SCHEMA IS LAW**: DO NOT add fields from your own knowledge of what this kind of document usually contains. USE ONLY the exact field names listed above.
 3. **STRUCTURAL INTEGRITY**: Your response MUST follow the field structure exactly as defined above at the root level.
 4. **NO HALLUCINATED WRAPPERS**: DO NOT wrap these fields in sub-objects like 'identity', 'metadata', or 'data' unless specified in the schema.
 5. **CAPTURE WHAT IS PRESENT**: Capture EVERY relevant row and data point that IS in the source — especially technical tables (like pin assignments). But never manufacture rows or values that are absent from the source (see Rule 1): completeness means missing nothing real, not filling everything in.
@@ -1679,53 +1679,66 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
             elif hasattr(r, 'summary') and r.summary: 
                 all_reasoning.append(r.summary)
 
-        # 2b. Deduplicate parameters by name if present
+        # 2b. Deduplicate parameter-shaped lists by name, wherever they appear.
+        # A list is "parameter-shaped" if its items expose name/value/unit (the
+        # TechParameter shape). We detect this STRUCTURALLY rather than keying on
+        # a field literally named 'parameters', so the pass stays domain-agnostic
+        # and never touches differently-shaped lists like line_items or entities.
+        def _is_param_shaped(lst) -> bool:
+            if not isinstance(lst, list) or not lst:
+                return False
+            item = next((x for x in lst if x is not None), None)
+            if isinstance(item, BaseModel):
+                keys = set(item.model_fields.keys())
+            elif isinstance(item, dict):
+                keys = set(item.keys())
+            else:
+                return False
+            return {'name', 'value', 'unit'} <= keys
+
+        def _dedupe_param_list(params: list) -> list:
+            seen = set()
+            deduped = []
+            for p in params:
+                # Smart unit splitting: if unit is null but value carries it, split it out.
+                p_name = getattr(p, 'name', None) or (p.get('name') if isinstance(p, dict) else None)
+                p_val = getattr(p, 'value', None) or (p.get('value') if isinstance(p, dict) else None)
+                p_unit = getattr(p, 'unit', None) or (p.get('unit') if isinstance(p, dict) else None)
+
+                if p_val and not self._is_non_empty(p_unit):
+                    # Aggressive Cleaning: Remove non-printable/weird spaces
+                    clean_val = str(p_val).replace('\xa0', ' ').strip()
+                    # Greedy regex for Value + Unit
+                    m = re.search(r"^([\d\.,\-\+\s/]+)\s*([a-zA-Z°Ω%µ\d]*[a-zA-Z°Ω%µ][²³]?)$", clean_val)
+                    if m:
+                        new_val, new_unit = m.group(1).strip(), m.group(2).strip()
+                        # Validation: Unit should look like a unit (not a trailing number)
+                        if new_unit and not new_unit.isdigit():
+                            logger.info(f"      [Heuristic] Split unit '{new_unit}' from value '{new_val}' for {p_name}")
+                            if isinstance(p, dict):
+                                p['value'], p['unit'] = new_val, new_unit
+                            else:
+                                setattr(p, 'value', new_val)
+                                setattr(p, 'unit', new_unit)
+
+                if p_name and p_name in seen:
+                    continue
+                if p_name:
+                    seen.add(p_name)
+                deduped.append(p)
+            return deduped
+
         for field in model_fields:
             m_val = getattr(master, field, None)
-            params = None
-            
-            # Case 1: Top-level list field named 'parameters'
-            if field == 'parameters' and isinstance(m_val, list):
-                params = m_val
-            # Case 2: Nested 'parameters' field inside a sub-object
-            elif m_val and isinstance(m_val, BaseModel) and hasattr(m_val, 'parameters'):
-                params = getattr(m_val, 'parameters')
-                if not isinstance(params, list): params = None
-
-            if params is not None:
-                seen = set()
-                deduped = []
-                for p in params:
-                    # Case 2c: Smart Unit Splitting (If unit is null but value has it)
-                    p_name = getattr(p, 'name', None) or (p.get('name') if isinstance(p, dict) else None)
-                    p_val = getattr(p, 'value', None) or (p.get('value') if isinstance(p, dict) else None)
-                    p_unit = getattr(p, 'unit', None) or (p.get('unit') if isinstance(p, dict) else None)
-                    
-                    if p_val and not self._is_non_empty(p_unit):
-                        # Aggressive Cleaning: Remove non-printable/weird spaces
-                        clean_val = str(p_val).replace('\xa0', ' ').strip()
-                        # Greedy regex for Value + Unit
-                        m = re.search(r"^([\d\.,\-\+\s/]+)\s*([a-zA-Z°Ω%µ\d]*[a-zA-Z°Ω%µ][²³]?)$", clean_val)
-                        if m:
-                            new_val, new_unit = m.group(1).strip(), m.group(2).strip()
-                            # Validation: Unit should look like a unit (not a trailing number)
-                            if new_unit and not new_unit.isdigit():
-                                logger.info(f"      [Heuristic] Split unit '{new_unit}' from value '{new_val}' for {p_name}")
-                                if isinstance(p, dict):
-                                    p['value'], p['unit'] = new_val, new_unit
-                                else:
-                                    setattr(p, 'value', new_val)
-                                    setattr(p, 'unit', new_unit)
-
-                    if p_name and p_name in seen: continue
-                    if p_name: seen.add(p_name)
-                    deduped.append(p)
-                
-                # Update back to the correct location
-                if field == 'parameters' and isinstance(m_val, list):
-                    setattr(master, 'parameters', deduped)
-                else:
-                    setattr(m_val, 'parameters', deduped)
+            # Top-level param-shaped list
+            if _is_param_shaped(m_val):
+                setattr(master, field, _dedupe_param_list(m_val))
+            # Param-shaped list nested one level inside a sub-model block
+            elif isinstance(m_val, BaseModel):
+                for sub_field in m_val.model_fields:
+                    sub_val = getattr(m_val, sub_field, None)
+                    if _is_param_shaped(sub_val):
+                        setattr(m_val, sub_field, _dedupe_param_list(sub_val))
 
 
 
@@ -1781,9 +1794,17 @@ SOURCE CONTENT:
         return master
 
     def _ground_with_langextract(self, master: T, context_markdown: str) -> None:
-        """Uses langextract to add 'SourceEvidence' to specific high-precision modules."""
+        """Uses langextract to add 'SourceEvidence' to specific high-precision modules.
+
+        NOTE: the block whitelist below is domain-specific (industrial + invoice) and
+        is a known killer-#3 hardcode. It is intentionally NOT generalized yet: the
+        underlying `_ground_block` is a stub that overwrites `source_evidence` with a
+        placeholder snippet, so widening the whitelist only spreads that corruption
+        and adds an LLM call per block. De-hardcode this ONLY after `_ground_block`
+        is rewritten to map real langextract offsets back to fields. See SOTA_AUDIT.md.
+        """
         logger.info("Librarian Grounding: Using langextract for high-precision validation...")
-        
+
         # Modules that benefit most from line-level grounding
         groundable_blocks = {
             "electrical": "technical parameters and electrical specifications",
