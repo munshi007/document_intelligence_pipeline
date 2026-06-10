@@ -315,6 +315,13 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         level drops produced by the extractor LLM such as 'TIBAANAMA' for
         'TIBA PANAMA').
 
+        Numeric leaves are verified too (locale-aware: '1.000,00' and
+        '1,000.00' both parse to 1000.0): a number must match a numeric token
+        in the source — preferentially in the same source LINE as a grounded
+        string sibling (its table row). A flagged number with a unique close
+        digit-match in its row is snapped to the row's value
+        (kind='numeric_snap'); otherwise it is flagged with kind='numeric'.
+
         Skips meta/enum/reasoning fields. Returns audit stats:
           {checked, verified, repaired: [{path, before, after, ratio}],
            flagged:  [{path, value, best_ratio}],
@@ -419,10 +426,127 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
             "repaired": [], "flagged": [], "provenance": [],
         }
 
+        # ── numeric verification helpers ──
+        NUM_TOKEN = re.compile(r"(?<![\w.,])[-+]?\d(?:[\d.,]*\d)?(?!\w)")
+
+        def parse_token(tok: str) -> set:
+            """All plausible parses of a source number token. Locale-agnostic:
+            '1.000,00' → {1000.0}; '1,80' → {1.8, 180.0} (decimal comma vs
+            thousands comma) — ambiguity is resolved by value equality."""
+            t = tok.strip().replace(" ", "")
+            outs: set = set()
+
+            def _try(s: str) -> None:
+                try:
+                    outs.add(float(s))
+                except ValueError:
+                    pass
+
+            if "," in t and "." in t:
+                if t.rfind(",") > t.rfind("."):
+                    _try(t.replace(".", "").replace(",", "."))   # 1.000,00
+                else:
+                    _try(t.replace(",", ""))                     # 1,000.00
+            elif "," in t:
+                _try(t.replace(",", "."))                        # decimal comma
+                _try(t.replace(",", ""))                         # thousands comma
+            elif "." in t:
+                _try(t)                                          # decimal point
+                _try(t.replace(".", ""))                         # thousands point
+            else:
+                _try(t)
+            return outs
+
+        def numbers_in(text: str) -> List[float]:
+            vals: List[float] = []
+            for m in NUM_TOKEN.finditer(text or ""):
+                vals.extend(parse_token(m.group(0)))
+            return vals
+
+        def num_eq(a: float, b: float) -> bool:
+            return abs(a - b) <= max(1e-6, abs(b) * 1e-6)
+
+        def anchor_line(parent: Dict[str, Any]) -> Optional[str]:
+            """The source LINE containing a string sibling of a numeric leaf —
+            i.e. the table row this number belongs to."""
+            for sv in parent.values():
+                if not (isinstance(sv, str) and len(sv.strip()) >= 3):
+                    continue
+                probe = sv.strip().splitlines()[0][:80]
+                if len(probe) < 3:
+                    continue
+                m = re.search(re.escape(probe), source_markdown or "", re.IGNORECASE)
+                if not m:
+                    continue
+                s = (source_markdown or "").rfind("\n", 0, m.start()) + 1
+                e = (source_markdown or "").find("\n", m.end())
+                return (source_markdown or "")[s: e if e != -1 else None]
+            return None
+
+        doc_nums: Optional[List[float]] = None
+
+        def check_number(parent: Dict[str, Any], key: str, val: Any, full_path: str) -> None:
+            nonlocal doc_nums
+            stats["checked"] += 1
+            target = float(val)
+            row = anchor_line(parent)
+            row_nums = numbers_in(row) if row else []
+            if any(num_eq(target, c) for c in row_nums):
+                stats["verified"] += 1
+                return
+            if doc_nums is None:
+                doc_nums = numbers_in(source_markdown or "")
+            if any(num_eq(target, c) for c in doc_nums):
+                stats["verified"] += 1
+                return
+            # Row-scoped digit snap: the model produced a number close to —
+            # but not equal to — one in its own row (digit insertion/drop,
+            # e.g. 2243 for 243). Only safe inside the row: doc-wide there
+            # are far too many candidate numbers.
+            scored: List[tuple] = []
+            if row_nums:
+                td = re.sub(r"\D", "", f"{target:g}")
+                for c in set(row_nums):
+                    cd = re.sub(r"\D", "", f"{c:g}")
+                    if not cd or not td:
+                        continue
+                    scored.append(
+                        (difflib.SequenceMatcher(None, td, cd).ratio(), c)
+                    )
+                scored.sort(reverse=True)
+                if scored and scored[0][0] >= 0.6 and (
+                    len(scored) == 1 or scored[0][0] > scored[1][0]
+                ):
+                    best_ratio, best_val = scored[0]
+                    repaired_val: Any = (
+                        int(best_val)
+                        if isinstance(val, int) and float(best_val).is_integer()
+                        else best_val
+                    )
+                    parent[key] = repaired_val
+                    stats["verified"] += 1
+                    stats["repaired"].append({
+                        "path": full_path, "before": val, "after": repaired_val,
+                        "ratio": round(best_ratio, 3), "kind": "numeric_snap",
+                    })
+                    return
+            stats["flagged"].append({
+                "path": full_path, "value": val,
+                "best_ratio": round(scored[0][0], 3) if scored else 0.0,
+                "kind": "numeric",
+            })
+
         def is_candidate(key: str, val: Any) -> bool:
             if key in SKIP_FIELDS or not isinstance(val, str):
                 return False
             return len(val.strip()) >= 3
+
+        def is_numeric_candidate(key: str, val: Any) -> bool:
+            return (
+                key not in SKIP_FIELDS
+                and isinstance(val, (int, float))
+                and not isinstance(val, bool)
+            )
 
         def record_provenance(path: str, span: str, ratio: float) -> None:
             page = find_page_for_span(span)
@@ -483,6 +607,8 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                     "path": full, "value": v,
                                     "best_ratio": round(ratio, 3),
                                 })
+                    elif is_numeric_candidate(k, v):
+                        check_number(node, k, v, full)
                     else:
                         walk(v, full)
             elif isinstance(node, list):
@@ -1423,6 +1549,10 @@ VALUE:
 
         # 1a. Flagged values (verifier-proven wrong) — highest priority
         for f in grounding_stats.get("flagged", []) or []:
+            if f.get("kind") == "numeric":
+                # Numeric flags are the numeric verifier's domain; a string
+                # retry answer would type-clash with the schema field.
+                continue
             path = f.get("path")
             if not path or path in seen_paths:
                 continue
