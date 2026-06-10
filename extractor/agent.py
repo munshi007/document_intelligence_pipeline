@@ -358,13 +358,34 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 
         norm_source = normalize(source_markdown or "")
 
+        def recover_source_case(value: str) -> Optional[str]:
+            """Locate `value` in the ORIGINAL source (case-insensitively,
+            tolerating whitespace runs and stripped <!-- --> comments between
+            tokens) and return the source's own rendering. The source is
+            ground truth for casing: a value that matches it only
+            case-insensitively was case-mangled by the model."""
+            tokens = normalize(value).split()
+            if not tokens:
+                return None
+            sep = r"(?:\s|<!--[^>]*-->)+"
+            pattern = sep.join(re.escape(t) for t in tokens)
+            try:
+                m = re.search(pattern, source_markdown or "", re.IGNORECASE)
+            except re.error:
+                return None
+            if not m:
+                return None
+            return re.sub(r"<!--[^>]*-->", " ", m.group(0)).strip()
+
         def fuzzy_find(needle: str) -> tuple:
             """Return (best_ratio, repaired_str_or_None) for needle vs source."""
             n = normalize(needle)
             if len(n) < 3 or not norm_source:
                 return 0.0, None
             if n in norm_source:
-                return 1.0, None  # already verbatim — no repair needed
+                # Verbatim under normalization; caller (walk) handles
+                # case restoration for this branch before reaching here.
+                return 1.0, None
             L = len(n)
             best_ratio = 0.0
             best_span = None
@@ -421,7 +442,18 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                         stats["checked"] += 1
                         if normalize(v) in norm_source:
                             stats["verified"] += 1
-                            record_provenance(full, v, 1.0)
+                            restored = recover_source_case(v)
+                            if restored and restored != v:
+                                # Same text per the source, but the model
+                                # mangled case/whitespace — snap to source.
+                                node[k] = restored
+                                stats["repaired"].append({
+                                    "path": full, "before": v,
+                                    "after": restored, "ratio": 1.0,
+                                })
+                                record_provenance(full, restored, 1.0)
+                            else:
+                                record_provenance(full, v, 1.0)
                         else:
                             ratio, repaired = fuzzy_find(v)
                             if (repaired
@@ -952,9 +984,13 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         """
         Validate retry response against source. Returns (accepted, final_value, detail).
         - Empty / 'null' / 'none' / 'n/a'  → (False, None, 'model_says_not_present')
-        - Verbatim substring of source     → (True, response, 'verbatim_match')
+        - Verbatim substring of source     → (True, source-cased span, 'verbatim_match')
         - Fuzzy snap with ratio ≥ threshold → (True, snapped, 'fuzzy_snap_<r>')
         - Otherwise                        → (False, None, 'not_in_source_<r>')
+
+        The verbatim path returns the SOURCE's rendering of the span, not the
+        model's response — matching is case-insensitive, so the response may
+        be case-mangled while the source is ground truth.
         """
         import difflib
 
@@ -973,6 +1009,17 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
             return (False, None, "response_too_short")
 
         if norm_resp in norm_source:
+            # Snap to the source's own casing/whitespace: the match above is
+            # case-insensitive, so a case-mangled response still lands here.
+            sep = r"(?:\s|<!--[^>]*-->)+"
+            pattern = sep.join(re.escape(t) for t in norm_resp.split())
+            try:
+                m = re.search(pattern, source_markdown or "", re.IGNORECASE)
+            except re.error:
+                m = None
+            if m:
+                restored = re.sub(r"<!--[^>]*-->", " ", m.group(0)).strip()
+                return (True, restored, "verbatim_match")
             return (True, r, "verbatim_match")
 
         L = len(norm_resp)
