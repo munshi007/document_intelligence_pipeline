@@ -287,14 +287,13 @@ def evaluate_extraction(
     if isinstance(grounding_stats, dict) and grounding_stats.get("checked"):
         g_checked = int(grounding_stats.get("checked", 0) or 0)
         g_verified = int(grounding_stats.get("verified", 0) or 0)
-        g_repaired_list = grounding_stats.get("repaired", []) or []
-        g_repaired = len(g_repaired_list)
+        g_repaired = len(grounding_stats.get("repaired", []) or [])
         g_flagged = len(grounding_stats.get("flagged", []) or [])
-        # case_restore repairs are already counted in `verified` (verbatim
-        # modulo casing) — adding them again would push the rate above 1.0.
-        g_grounded = g_verified + len(
-            [r for r in g_repaired_list if r.get("kind") != "case_restore"]
-        )
+        # `verified` is the complete grounded count (repairs — case restores
+        # and fuzzy snaps — are counted as verified at repair time). The
+        # repaired list is the audit trail; adding it double-counted and
+        # pushed the rate above 1.0 after post-retry refreshes.
+        g_grounded = g_verified
         grounding_verification_block = {
             "grounding_checked": g_checked,
             "grounding_verified": g_verified,

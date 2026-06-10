@@ -161,15 +161,15 @@ def test_abbreviated_attempt_triggers_regeneration_and_uses_complete_output():
 
 
 def test_grounding_summary_pass_rate_capped_with_case_restores():
-    """Stats fix: case_restore repairs are already inside `verified` — the
-    stage summary must not add them to grounded again (pass_rate > 1.0)."""
+    """Stats fix: `verified` is the complete grounded count (repairs are
+    counted as verified at repair time); the repaired audit list must never
+    be added to grounded again (pass_rate > 1.0)."""
     from stages.extract import _grounding_summary
 
-    # 6 fields checked: 5 verified (2 of them via case restore), 1 fuzzy
-    # snapped (fuzzy repairs are NOT counted in verified) → all 6 grounded.
+    # 6 fields checked, all grounded (2 via case restore, 1 via fuzzy snap).
     stats = {
         "checked": 6,
-        "verified": 5,
+        "verified": 6,
         "repaired": [
             {"path": "from.name", "ratio": 1.0, "kind": "case_restore"},
             {"path": "to.name", "ratio": 1.0, "kind": "case_restore"},
@@ -192,3 +192,27 @@ def test_grounding_summary_pass_rate_capped_with_case_restores():
     }
     summary = _grounding_summary(realistic)
     assert summary["pass_rate"] == 1.0, "10 case restores must not inflate pass_rate"
+
+
+def test_pass_rate_stable_through_post_retry_refresh():
+    """Regression for the live 1.463 pass_rate: a fuzzy snap in pass 1 becomes
+    verbatim in the post-retry refresh pass; with the repaired audit carried
+    over (as _finalize_record does), the summary must still cap at 1.0."""
+    from extractor.agent import ExtractorAgent
+    from stages.extract import _grounding_summary
+
+    source = "TIBA PANAMA logistics services\nMusterkunde AG\n"
+    record = {"company": "TIBAANAMA logistics services", "name": "musterkunde ag"}
+
+    stats1 = ExtractorAgent._verify_string_spans(record, source)
+    assert len(stats1["repaired"]) == 2  # one fuzzy snap + one case restore
+    assert stats1["verified"] == stats1["checked"] == 2
+
+    # _finalize_record refresh: re-verify the already-repaired record and
+    # carry the prior repair audit over.
+    stats2 = ExtractorAgent._verify_string_spans(record, source)
+    stats2["repaired"] = stats1["repaired"] + stats2["repaired"]
+
+    summary = _grounding_summary(stats2)
+    assert summary["pass_rate"] == 1.0
+    assert summary["repaired"] == 2

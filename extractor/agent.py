@@ -464,6 +464,14 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                 and ratio >= threshold
                                 and normalize(repaired) != normalize(v)):
                                 node[k] = repaired
+                                # The snapped value IS grounded — count it in
+                                # `verified` so that number is the single
+                                # complete grounded count. `repaired` is the
+                                # audit trail, never added to pass rates
+                                # (post-retry refreshes re-verify snapped
+                                # values verbatim; summing the two double-
+                                # counted and pushed pass_rate above 1.0).
+                                stats["verified"] += 1
                                 stats["repaired"].append({
                                     "path": full, "before": v,
                                     "after": repaired, "ratio": round(ratio, 3),

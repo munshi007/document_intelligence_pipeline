@@ -121,16 +121,13 @@ def _grounding_summary(gr_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         return None
     checked = int(gr_stats.get("checked", 0) or 0)
     verified = int(gr_stats.get("verified", 0) or 0)
-    repaired_list = gr_stats.get("repaired", []) or []
-    repaired = len(repaired_list)
+    repaired = len(gr_stats.get("repaired", []) or [])
     flagged_list = gr_stats.get("flagged", []) or []
-    # case_restore repairs are already counted in `verified` (the value was
-    # verbatim-grounded; only its casing was snapped to the source) — adding
-    # them again would push pass_rate above 1.0.
-    repaired_unverified = len(
-        [r for r in repaired_list if r.get("kind") != "case_restore"]
-    )
-    grounded = verified + repaired_unverified
+    # `verified` is the complete grounded count (the verifier counts repaired
+    # values — case restores and fuzzy snaps — as verified at repair time).
+    # `repaired` is the audit trail; adding it here double-counted and pushed
+    # pass_rate above 1.0 after post-retry refreshes.
+    grounded = verified
     summary = {
         "checked": checked,
         "verified": verified,
