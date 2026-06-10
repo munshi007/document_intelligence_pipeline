@@ -131,7 +131,7 @@ def _grounding_summary(gr_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str,
         [r for r in repaired_list if r.get("kind") != "case_restore"]
     )
     grounded = verified + repaired_unverified
-    return {
+    summary = {
         "checked": checked,
         "verified": verified,
         "repaired": repaired,
@@ -146,6 +146,19 @@ def _grounding_summary(gr_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str,
             for f in flagged_list
         ],
     }
+    # Recall axis: pass_rate judges only values that ARE present; coverage
+    # reports source tables whose rows never made it into the record.
+    cov = gr_stats.get("coverage")
+    if isinstance(cov, dict):
+        summary["coverage"] = {
+            "tables_checked": int(cov.get("tables_checked", 0) or 0),
+            "undercovered_tables": len(cov.get("undercovered", []) or []),
+            "items_recovered": sum(
+                int(r.get("accepted", 0) or 0) for r in cov.get("recovered", []) or []
+            ),
+            "undercovered": cov.get("undercovered", []),
+        }
+    return summary
 
 
 def _load_discovery_meta(path: Path) -> Dict[str, Any]:

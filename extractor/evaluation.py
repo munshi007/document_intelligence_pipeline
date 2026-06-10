@@ -287,9 +287,14 @@ def evaluate_extraction(
     if isinstance(grounding_stats, dict) and grounding_stats.get("checked"):
         g_checked = int(grounding_stats.get("checked", 0) or 0)
         g_verified = int(grounding_stats.get("verified", 0) or 0)
-        g_repaired = len(grounding_stats.get("repaired", []) or [])
+        g_repaired_list = grounding_stats.get("repaired", []) or []
+        g_repaired = len(g_repaired_list)
         g_flagged = len(grounding_stats.get("flagged", []) or [])
-        g_grounded = g_verified + g_repaired
+        # case_restore repairs are already counted in `verified` (verbatim
+        # modulo casing) — adding them again would push the rate above 1.0.
+        g_grounded = g_verified + len(
+            [r for r in g_repaired_list if r.get("kind") != "case_restore"]
+        )
         grounding_verification_block = {
             "grounding_checked": g_checked,
             "grounding_verified": g_verified,
@@ -297,6 +302,16 @@ def evaluate_extraction(
             "grounding_flagged": g_flagged,
             "grounding_pass_rate": round(g_grounded / g_checked, 4) if g_checked else None,
         }
+        # Recall axis: precision rates only judge values that are present;
+        # these report source tables whose rows never reached the record.
+        cov = grounding_stats.get("coverage")
+        if isinstance(cov, dict):
+            grounding_verification_block["recall_undercovered_tables"] = len(
+                cov.get("undercovered", []) or []
+            )
+            grounding_verification_block["recall_items_recovered"] = sum(
+                int(r.get("accepted", 0) or 0) for r in cov.get("recovered", []) or []
+            )
 
     return {
         "doc": doc_stem,

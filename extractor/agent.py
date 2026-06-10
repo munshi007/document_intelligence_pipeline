@@ -484,6 +484,246 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         walk(record)
         return stats
 
+    # ── Recall coverage (omission detection + targeted list recovery) ──
+    #
+    # Every check above is a PRECISION check: it judges values that are
+    # present. None of them can see an omission — a model that returns
+    # items:[] with a plausible rationalization scores populated=1.0 and
+    # grounding pass_rate 1.0. The coverage pass closes that blind spot by
+    # asking the inverse question: which source-table rows never made it
+    # into the record at all?
+
+    @staticmethod
+    def _markdown_tables(source_markdown: str) -> List[Dict[str, Any]]:
+        """Parse pipe-tables out of the source markdown.
+
+        Returns [{'header': [cells], 'rows': [[cells]], 'text': block}].
+        The first non-separator row is the header; `---` rows are dropped.
+        """
+        blocks: List[List[str]] = []
+        cur: List[str] = []
+        for line in (source_markdown or "").splitlines():
+            if line.lstrip().startswith("|"):
+                cur.append(line)
+            else:
+                if len(cur) >= 2:
+                    blocks.append(cur)
+                cur = []
+        if len(cur) >= 2:
+            blocks.append(cur)
+
+        sep = re.compile(r":?-{2,}:?$")
+        tables: List[Dict[str, Any]] = []
+        for block in blocks:
+            header: Optional[List[str]] = None
+            rows: List[List[str]] = []
+            for ln in block:
+                cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+                if cells and all(sep.fullmatch(c) for c in cells if c):
+                    continue
+                if header is None:
+                    header = cells
+                else:
+                    rows.append(cells)
+            if header is not None:
+                tables.append({"header": header, "rows": rows, "text": "\n".join(block)})
+        return tables
+
+    @staticmethod
+    def _norm_text(s: Any) -> str:
+        return re.sub(r"\s+", " ", str(s or "")).lower().strip()
+
+    def _undercovered_tables(
+        self,
+        record: Dict[str, Any],
+        source_markdown: str,
+        *,
+        min_rows: int = 3,
+        threshold: float = 0.5,
+    ) -> tuple:
+        """Return (flags, tables): source tables whose data rows mostly do not
+        appear anywhere in the extracted record. A row counts as covered when
+        any of its cells (≥3 chars, normalized) occurs in the record text."""
+        tables = self._markdown_tables(source_markdown)
+        blob = self._norm_text(json.dumps(record, ensure_ascii=False, default=str))
+        flags: List[Dict[str, Any]] = []
+        for ti, t in enumerate(tables):
+            rows = [r for r in t["rows"] if any(c for c in r)]
+            if len(rows) < min_rows:
+                continue
+            covered = sum(
+                1 for r in rows
+                if any(len(self._norm_text(c)) >= 3 and self._norm_text(c) in blob for c in r)
+            )
+            if covered / len(rows) < threshold:
+                flags.append({
+                    "table_index": ti,
+                    "data_rows": len(rows),
+                    "covered_rows": covered,
+                    "header": (t["header"] or [])[:8],
+                })
+        return flags, tables
+
+    @staticmethod
+    def _header_field_affinity(header: List[str], item_model: Type[BaseModel]) -> float:
+        """Fraction of the item model's field names whose tokens appear in the
+        table header. Derived entirely from the discovered schema and the
+        document's own header text — no fixed vocabulary."""
+        header_tokens: set = set()
+        for cell in header or []:
+            header_tokens |= set(re.findall(r"[a-zA-Z]{3,}", str(cell).lower()))
+        fields = list(getattr(item_model, "model_fields", {}).keys())
+        if not header_tokens or not fields:
+            return 0.0
+        hits = sum(
+            1 for f in fields
+            if any(tok in header_tokens for tok in re.findall(r"[a-z]{3,}", f.lower()))
+        )
+        return hits / len(fields)
+
+    @staticmethod
+    def _list_object_fields(response_model: Type[BaseModel]) -> Dict[str, Type[BaseModel]]:
+        """Top-level schema fields typed List[<pydantic model>] → item model."""
+        import typing
+        out: Dict[str, Type[BaseModel]] = {}
+        for f_name, f_info in response_model.model_fields.items():
+            ann = f_info.annotation
+            origin = typing.get_origin(ann)
+            if origin is typing.Union:
+                for a in typing.get_args(ann):
+                    if typing.get_origin(a) is list:
+                        ann, origin = a, list
+                        break
+            if origin is list:
+                args = typing.get_args(ann)
+                if args and hasattr(args[0], "model_fields"):
+                    out[f_name] = args[0]
+        return out
+
+    def _recover_list_coverage(
+        self,
+        record: Dict[str, Any],
+        response_model: Type[BaseModel],
+        flags: List[Dict[str, Any]],
+        tables: List[Dict[str, Any]],
+        trace_context: Optional[Dict[str, Any]] = None,
+        max_recoveries: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """Targeted re-extraction of EMPTY list fields from under-covered
+        tables. One focused LLM call per (field, table); the table is matched
+        to the field by header↔field-name affinity, and every recovered item
+        must ground in the table text or it is dropped. Non-empty lists are
+        never mutated — they are only reported via the coverage flags."""
+        from pydantic import create_model
+
+        audit: List[Dict[str, Any]] = []
+        empty_fields = {
+            f: m for f, m in self._list_object_fields(response_model).items()
+            if not record.get(f)
+        }
+        if not empty_fields or not flags:
+            return audit
+
+        used_tables: set = set()
+        for f_name, item_model in list(empty_fields.items())[:max_recoveries]:
+            scored = sorted(
+                (
+                    (self._header_field_affinity(tables[fl["table_index"]]["header"], item_model),
+                     fl["data_rows"], fl["table_index"])
+                    for fl in flags if fl["table_index"] not in used_tables
+                ),
+                reverse=True,
+            )
+            scored = [s for s in scored if s[0] > 0]
+            if not scored:
+                continue
+            affinity, n_rows, ti = scored[0]
+            table = tables[ti]
+            used_tables.add(ti)
+
+            wrapper = create_model("RecoveredList", items=(List[item_model], []))
+            field_lines = "\n".join(
+                f"- {fn}: {fi.description or fn.replace('_', ' ')}"
+                for fn, fi in item_model.model_fields.items()
+            )
+            prompt = f"""Extract EVERY data row of the table below as one object.
+Fields per object:
+{field_lines}
+
+RULES:
+1. One object per table data row — do not skip, merge, or abbreviate rows.
+2. Use ONLY values visible in the table. Never invent values.
+3. Output a JSON object with a single key "items" holding the array.
+
+TABLE:
+{table['text']}
+"""
+            result = self.client.generate_structured(
+                image=None,
+                prompt=prompt,
+                response_model=wrapper,
+                max_tokens=4096,
+                trace_dir=(trace_context or {}).get("trace_dir"),
+                trace_key=f"coverage_recovery_{f_name}",
+            )
+            items = list(getattr(result, "items", []) or []) if result else []
+            table_norm = self._norm_text(table["text"])
+            accepted: List[Dict[str, Any]] = []
+            for it in items:
+                dump = it.model_dump()
+                str_vals = [v for v in dump.values() if isinstance(v, str) and len(v.strip()) >= 3]
+                if str_vals and not any(self._norm_text(v) in table_norm for v in str_vals):
+                    continue  # none of the item's strings exist in the table — fabricated
+                accepted.append(dump)
+            accepted = accepted[:n_rows]
+            if accepted:
+                record[f_name] = accepted
+                logger.info(
+                    f"      [Coverage] Recovered {len(accepted)} item(s) into "
+                    f"'{f_name}' from an under-covered table ({n_rows} rows, "
+                    f"affinity {affinity:.2f})."
+                )
+            audit.append({
+                "field": f_name, "table_index": ti, "table_rows": n_rows,
+                "model_items": len(items), "accepted": len(accepted),
+                "affinity": round(affinity, 3),
+            })
+        return audit
+
+    def _audit_list_coverage(
+        self,
+        record: Dict[str, Any],
+        response_model: Type[BaseModel],
+        source_markdown: str,
+        trace_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Detect under-covered source tables, recover empty list fields from
+        them, then re-audit. Returns the coverage block for grounding stats
+        (None when the source has no tables worth checking)."""
+        if not source_markdown:
+            return None
+        flags, tables = self._undercovered_tables(record, source_markdown)
+        tables_checked = sum(
+            1 for t in tables if len([r for r in t["rows"] if any(r)]) >= 3
+        )
+        if not tables_checked:
+            return None
+        if not flags:
+            return {"tables_checked": tables_checked, "undercovered": [], "recovered": []}
+        logger.warning(
+            f"      [Coverage] {len(flags)} source table(s) under-covered by the extraction."
+        )
+        recovered = self._recover_list_coverage(
+            record, response_model, flags, tables, trace_context
+        )
+        if any(r.get("accepted") for r in recovered):
+            flags, _ = self._undercovered_tables(record, source_markdown)
+        return {
+            "tables_checked": tables_checked,
+            "undercovered": flags,
+            "recovered": recovered,
+        }
+
     def project_to_schema(
         self,
         source_payload: Dict[str, Any],
@@ -1600,14 +1840,28 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
                     f"      [Retry] {r['path']} ({r['reason']}): "
                     f"rejected — {r['reason_detail']}"
                 )
-        if accepted_retries:
+        # Recall coverage: detect source tables the extraction mostly missed
+        # (e.g. items:[] plus a rationalization) and re-extract empty list
+        # fields from the missed table. The precision checks above can only
+        # judge values that are present — this is the omission check.
+        coverage = self._audit_list_coverage(
+            refined_dict, response_model, context_markdown or "", trace_context
+        )
+        coverage_recovered = bool(
+            coverage and any(r.get("accepted") for r in coverage.get("recovered", []))
+        )
+
+        if accepted_retries or coverage_recovered:
             # Refresh provenance now that previously-empty/wrong fields are
             # filled — but carry over the first pass's repair audit: the fresh
             # pass sees already-repaired values and would report repaired=0,
-            # hiding the repairs from the final _grounding block.
+            # hiding the repairs from the final _grounding block. The refresh
+            # also case-restores and span-verifies coverage-recovered items.
             prior_repairs = grounding_stats["repaired"]
             grounding_stats = self._verify_string_spans(refined_dict, context_markdown or "")
             grounding_stats["repaired"] = prior_repairs + grounding_stats["repaired"]
+        if coverage:
+            grounding_stats["coverage"] = coverage
         grounding_stats["retries"] = retry_audit
         grounding_stats["retries_attempted"] = len(retry_audit)
         grounding_stats["retries_accepted"] = len(accepted_retries)
