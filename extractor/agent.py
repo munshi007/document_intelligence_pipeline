@@ -447,9 +447,13 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                 # Same text per the source, but the model
                                 # mangled case/whitespace — snap to source.
                                 node[k] = restored
+                                # kind=case_restore: already counted in
+                                # `verified` (verbatim modulo casing) — summary
+                                # consumers must not add it to grounded again.
                                 stats["repaired"].append({
                                     "path": full, "before": v,
                                     "after": restored, "ratio": 1.0,
+                                    "kind": "case_restore",
                                 })
                                 record_provenance(full, restored, 1.0)
                             else:
@@ -463,6 +467,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                 stats["repaired"].append({
                                     "path": full, "before": v,
                                     "after": repaired, "ratio": round(ratio, 3),
+                                    "kind": "fuzzy_snap",
                                 })
                                 record_provenance(full, repaired, ratio)
                             else:
@@ -1596,8 +1601,13 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
                     f"rejected — {r['reason_detail']}"
                 )
         if accepted_retries:
-            # Refresh provenance now that previously-empty/wrong fields are filled
+            # Refresh provenance now that previously-empty/wrong fields are
+            # filled — but carry over the first pass's repair audit: the fresh
+            # pass sees already-repaired values and would report repaired=0,
+            # hiding the repairs from the final _grounding block.
+            prior_repairs = grounding_stats["repaired"]
             grounding_stats = self._verify_string_spans(refined_dict, context_markdown or "")
+            grounding_stats["repaired"] = prior_repairs + grounding_stats["repaired"]
         grounding_stats["retries"] = retry_audit
         grounding_stats["retries_attempted"] = len(retry_audit)
         grounding_stats["retries_accepted"] = len(accepted_retries)

@@ -91,6 +91,31 @@ class LocalTextProvider(BaseVLMProvider):
                 logger.error(f"Failed to load local Unsloth Text model: {e}")
                 raise
 
+    # A bare `...` / `…` standing where a JSON value would be — the model
+    # abbreviating a long list ("and so on"). Structural-context lookarounds
+    # keep ellipses inside string values untouched.
+    _LIST_ABBREV_RE = re.compile(r'(?<=[\[{,])\s*(?:\.\.\.|…)\s*,?(?=\s*[\[{"\]},])')
+
+    @staticmethod
+    def _has_list_abbreviation(text: str) -> bool:
+        """True when the model output abbreviates a list with a bare ellipsis."""
+        return bool(text and LocalTextProvider._LIST_ABBREV_RE.search(text))
+
+    @staticmethod
+    def _strip_list_abbreviations(text: str) -> str:
+        """Remove `...` / `…` abbreviation tokens from malformed JSON.
+
+        Without this, the dangling `{` the abbreviation leaves behind makes
+        downstream repairs swallow every key that follows the abbreviated
+        list (observed: `grand_total` absorbed into a zombie list item and
+        dropped). Only used on the repair path — never on JSON that already
+        parses.
+        """
+        out = LocalTextProvider._LIST_ABBREV_RE.sub('', text)
+        # Drop a dangling `{` the abbreviation left with no body before `]`.
+        out = re.sub(r'(?:,\s*)?\{\s*(?=\])', '', out)
+        return out
+
     @staticmethod
     def _extract_json_payload(text: str, expected_type: str = "object", return_candidates: bool = False):
         """
@@ -149,6 +174,10 @@ class LocalTextProvider(BaseVLMProvider):
         # 3. Strategy-Aware Selection: Iteratively try to find the longest valid JSON substring
         found_json = None
         for candidate in reversed(candidates):
+            # A0. Strip list-abbreviation ellipses BEFORE any bracket surgery —
+            # they make every brace-counting repair below miscount.
+            candidate = LocalTextProvider._strip_list_abbreviations(candidate)
+
             # A. Try to fix truncated JSON by finding the last closing brace
             last_brace = candidate.rfind("}")
             if last_brace != -1:
@@ -239,6 +268,9 @@ class LocalTextProvider(BaseVLMProvider):
                 arr_start = stripped.find("[")
                 starts = [i for i in (obj_start, arr_start) if i != -1]
                 repair_src = stripped[min(starts):] if starts else stripped
+                # Abbreviation ellipses make json_repair absorb every key
+                # after the abbreviated list into a zombie list item.
+                repair_src = LocalTextProvider._strip_list_abbreviations(repair_src)
                 repaired_obj = repair_json(repair_src, return_objects=True)
                 ok = (
                     (expected_type == "object" and isinstance(repaired_obj, dict))
@@ -467,6 +499,25 @@ SCHEMA:
             # Attempt 1: strict schema generation
             decoded = self._run_generation(full_prompt, max_tokens)
             write_trace("attempt1_raw.txt", decoded)
+
+            # Anti-abbreviation regeneration: greedy decoding deterministically
+            # abbreviates long arrays with a bare `...` element on some docs,
+            # silently costing every item after it. Regenerate once with an
+            # explicit completeness order; keep the original output if the
+            # retry still abbreviates (the salvage path strips the ellipsis).
+            if self._has_list_abbreviation(decoded):
+                logger.warning(
+                    "Attempt 1 abbreviated a list with '...'; regenerating with anti-abbreviation instruction."
+                )
+                anti_abbrev = (
+                    "\n\nCRITICAL: A previous attempt abbreviated a long list with an "
+                    "ellipsis ('...'). NEVER do this. Write out EVERY list item in "
+                    "full, even when items are long, similar, or repetitive."
+                )
+                regenerated = self._run_generation(full_prompt + anti_abbrev, max_tokens)
+                write_trace("attempt1b_no_abbrev_raw.txt", regenerated)
+                if regenerated and not self._has_list_abbreviation(regenerated):
+                    decoded = regenerated
             json_payload, candidates = self._extract_json_payload(decoded, expected_type="object", return_candidates=True)
             if json_payload:
                 try:
