@@ -262,7 +262,21 @@ budget, baseline reproduction, and the literature confirmation above.
   real page, ratio as confidence; the block whitelist
   (`electrical/.../invoice_header`) is gone: any sub-model declaring
   `source_evidence` is grounded, schema-agnostically.
-- ⬜ **Killer #3 (remainder):** `discovery_agent.py:548-567` (scout few-shot);
-  `schema_engine.py:251` — still hardcoded.
+- ✅ **Killer #3 (scout few-shot):** the hardware-datasheet few-shot
+  (`art_no`/`manufacturer`/`technical_parameters` — structurally the expected
+  discovery output for the evaluation datasheets, i.e. few-shot leakage on the
+  eval domain) replaced with a structurally identical LAB TEST REPORT example
+  (non-corpus domain). The structural lesson (nested identity object +
+  `{name,value,unit}` measurement array) is preserved.
+- ✅ **Killer #3 (schema_engine):** `build_runtime_schema_draft` (the
+  keyword-triggered hardcoded schema injection at old line ~251) deleted —
+  it had zero callers.
+- **Killer #3 — remaining vocab is declared, not hidden:** the per-domain
+  fallback skeletons (`discovery_agent.py:~279`) and `_DOMAIN_TELLTALES`
+  (`~401`) are explicit domain-keyed registries: the former are documented
+  domain priors, the latter a *defensive* vocabulary used to detect
+  cross-domain hallucination in discovered skeletons. Neither masquerades as
+  domain-agnostic logic; both are intentionally retained. Same for the
+  regex signal lists in `schema_engine.py`'s heuristic domain/subtype router.
 - ⬜ **Killer #1 (vision), #2 (calibration):** not started.
 - ⬜ **Literature confirmation:** not started — **the gating blocker.**

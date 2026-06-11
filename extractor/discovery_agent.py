@@ -542,23 +542,23 @@ DOCUMENT — do not invent fields that aren't present.
 - LED diagnostics            → array of objects with {{name, state, meaning}}.
 - Invoice/quote line items   → array of objects with {{description, quantity, unit_price, total}}.
 
-### FEW-SHOT EXAMPLE — HARDWARE DATASHEET:
+### FEW-SHOT EXAMPLE — LAB TEST REPORT (nested identity + measurement array):
 {{
   "properties": {{
-    "product_identity": {{
+    "sample_identity": {{
       "type": "object", "description": "Basic identification details",
       "properties": {{
-        "art_no": {{"type": "string", "description": "The article number"}},
-        "manufacturer": {{"type": "string", "description": "The company name"}}
+        "sample_id": {{"type": "string", "description": "The sample identifier"}},
+        "laboratory": {{"type": "string", "description": "The issuing laboratory"}}
       }}
     }},
-    "technical_parameters": {{
-      "type": "array", "description": "List of specifications",
+    "test_results": {{
+      "type": "array", "description": "List of measured analytes",
       "items": {{
         "type": "object",
         "properties": {{
-          "name":  {{"type": "string", "description": "Name of parameter"}},
-          "value": {{"type": "string", "description": "The value"}},
+          "name":  {{"type": "string", "description": "Name of the analyte"}},
+          "value": {{"type": "string", "description": "The measured value"}},
           "unit":  {{"type": "string", "description": "The unit of measurement"}}
         }}
       }}
