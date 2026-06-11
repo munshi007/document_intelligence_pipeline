@@ -135,7 +135,11 @@ class TableExtractorTSR:
         used_word_ids: Set[int] = set()
         for cell in cells_pdf:
             self._fill_cell_with_words(cell, words, used_word_ids)
-        
+
+        # Words still unassigned were already vetted as table content
+        # (get_words_in_bbox); the cell grid is the approximate part.
+        self._rescue_unassigned_words(cells_pdf, words, used_word_ids)
+
         # Compute QA
         qa = self._compute_qa(words, cells_pdf, used_word_ids)
         
@@ -180,7 +184,56 @@ class TableExtractorTSR:
         
         cell.text = " ".join(w.text for w in cell_words)
         cell.word_ids = [w.id for w in cell_words]
-    
+
+    def _rescue_unassigned_words(
+        self,
+        cells: List[TableCell],
+        words: List[WordSpan],
+        used_word_ids: Set[int],
+    ) -> None:
+        """Assign words missed by center containment to their nearest cell.
+
+        The predicted grid never matches the true layout exactly — a word at
+        a table edge can sit a point or two outside every cell band and would
+        otherwise vanish from the cell text (e.g. the year clipped off a date
+        in the rightmost column). Distance is from word center to cell
+        rectangle, zero when inside.
+        """
+        fillable = [c for c in cells if c.bbox_pdf is not None]
+        if not fillable:
+            return
+
+        touched = set()
+        for word in words:
+            if word.id in used_word_ids:
+                continue
+            wx = (word.bbox[0] + word.bbox[2]) / 2
+            wy = (word.bbox[1] + word.bbox[3]) / 2
+
+            def gap_sq(cell: TableCell) -> float:
+                x0, y0, x1, y1 = cell.bbox_pdf
+                dx = max(x0 - wx, 0.0, wx - x1)
+                dy = max(y0 - wy, 0.0, wy - y1)
+                return dx * dx + dy * dy
+
+            best = min(fillable, key=gap_sq)
+            best.word_ids.append(word.id)
+            used_word_ids.add(word.id)
+            touched.add(id(best))
+
+        if not touched:
+            return
+        by_id = {w.id: w for w in words}
+        for cell in fillable:
+            if id(cell) not in touched:
+                continue
+            cell_words = sorted(
+                (by_id[wid] for wid in cell.word_ids if wid in by_id),
+                key=lambda w: (w.bbox[1], w.bbox[0]),
+            )
+            cell.word_ids = [w.id for w in cell_words]
+            cell.text = " ".join(w.text for w in cell_words)
+
     def _compute_qa(
         self,
         all_words: List[WordSpan],

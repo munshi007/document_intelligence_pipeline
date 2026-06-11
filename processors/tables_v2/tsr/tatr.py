@@ -13,6 +13,46 @@ from .base import TSREngine, CellPx
 logger = logging.getLogger(__name__)
 
 
+def _normalize_bands(bands: List[dict], axis: str, lo: float, hi: float) -> List[dict]:
+    """Make detected row/column bands tile [lo, hi] without gaps or overlaps.
+
+    TSR detectors emit approximate bands: near-duplicate detections of the
+    same column/row, small gaps between neighbours, and outer bands that stop
+    a few points short of the crop edge. Cell fill assigns words by center
+    containment, so any word whose center lands in a gap — or just past the
+    outer band — is silently dropped from the table text. Dedupe overlapping
+    bands (keep the higher score), snap adjacent boundaries to the midpoint
+    of their gap/overlap, and stretch the outer bands to the crop bounds.
+    """
+    i0, i1 = (0, 2) if axis == "x" else (1, 3)
+    if not bands:
+        return bands
+
+    # 1-D NMS: two bands covering mostly the same span are one detection.
+    kept: List[dict] = []
+    for band in sorted(bands, key=lambda b: -b["score"]):
+        b0, b1 = band["bbox"][i0], band["bbox"][i1]
+        span = max(1e-6, b1 - b0)
+        duplicate = False
+        for other in kept:
+            o0, o1 = other["bbox"][i0], other["bbox"][i1]
+            inter = min(b1, o1) - max(b0, o0)
+            if inter / min(span, max(1e-6, o1 - o0)) > 0.5:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(band)
+    kept.sort(key=lambda b: b["bbox"][i0])
+
+    for a, b in zip(kept, kept[1:]):
+        mid = (a["bbox"][i1] + b["bbox"][i0]) / 2
+        a["bbox"][i1] = mid
+        b["bbox"][i0] = mid
+    kept[0]["bbox"][i0] = min(kept[0]["bbox"][i0], lo)
+    kept[-1]["bbox"][i1] = max(kept[-1]["bbox"][i1], hi)
+    return kept
+
+
 class TATREngine(TSREngine):
     """
     TSR Engine wrapping Microsoft's Table Transformer (TATR).
@@ -139,10 +179,16 @@ class TATREngine(TSREngine):
         # Sort rows by Y, columns by X
         rows.sort(key=lambda r: r["bbox"][1])
         cols.sort(key=lambda c: c["bbox"][0])
-        
+
         if not rows or not cols:
             logger.debug("TATR: No rows or columns detected")
             return []
+
+        # Normalize bands so the cell grid tiles the full crop — otherwise
+        # words in inter-band gaps or past the outer band edge are dropped
+        # at fill time (center containment).
+        rows = _normalize_bands(rows, axis="y", lo=0.0, hi=float(img_height))
+        cols = _normalize_bands(cols, axis="x", lo=0.0, hi=float(img_width))
         
         # Create cells from row/column intersections
         cells = []
