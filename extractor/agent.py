@@ -10,7 +10,7 @@ import json
 import re
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Type, TypeVar
+from typing import List, Dict, Any, Optional, Type, TypeVar, get_args, get_origin
 from PIL import Image
 from pydantic import BaseModel
 
@@ -1924,7 +1924,7 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
         """
         # Grounding pass for high-precision evidence (optional)
         if use_grounding:
-            self._ground_with_langextract(master, context_markdown or "")
+            self._ground_block_evidence(master, context_markdown or "")
 
         # Projection pass: reshape the model output into the target schema's
         # exact field names (structural only — no raw-document content
@@ -2242,64 +2242,71 @@ SOURCE CONTENT:
         
         return master
 
-    def _ground_with_langextract(self, master: T, context_markdown: str) -> None:
-        """Uses langextract to add 'SourceEvidence' to specific high-precision modules.
+    def _ground_block_evidence(self, master: T, context_markdown: str) -> None:
+        """Attach real ``SourceEvidence`` to every sub-model that declares it.
 
-        NOTE: the block whitelist below is domain-specific (industrial + invoice) and
-        is a known killer-#3 hardcode. It is intentionally NOT generalized yet: the
-        underlying `_ground_block` is a stub that overwrites `source_evidence` with a
-        placeholder snippet, so widening the whitelist only spreads that corruption
-        and adds an LLM call per block. De-hardcode this ONLY after `_ground_block`
-        is rewritten to map real langextract offsets back to fields. See SOTA_AUDIT.md.
+        Schema-agnostic: any nested block (direct field or list item) with a
+        ``source_evidence`` field is groundable, whatever the domain — this
+        replaces the old hardcoded block whitelist (killer-#3) AND the
+        langextract stub behind it, which fired a doomed LLM call per block
+        (``examples=[]`` is rejected) and then stamped a fabricated
+        ``context[:200]`` snippet with ``page_number=1, confidence=0.95``
+        over the field. Evidence now comes from the same deterministic span
+        verifier used for record-level grounding: the block's own values are
+        located in the source, and the best-matching real span becomes the
+        snippet with its actual page number and match ratio. No LLM call.
         """
-        logger.info("Librarian Grounding: Using langextract for high-precision validation...")
+        if not context_markdown:
+            return
 
-        # Modules that benefit most from line-level grounding
-        groundable_blocks = {
-            "electrical": "technical parameters and electrical specifications",
-            "mechanical": "mechanical dimensions and physical properties",
-            "connectors": "connector types and pin assignments",
-            "diagnostics": "LED states and blink behaviors",
-            "invoice_header": "invoice metadata like numbers and dates",
-        }
+        blocks: List[BaseModel] = []
 
-        for block_key, description in groundable_blocks.items():
-            if hasattr(master, block_key) and getattr(master, block_key):
-                block = getattr(master, block_key)
-                self._ground_block(block, context_markdown, description)
+        def is_groundable(obj: Any) -> bool:
+            return isinstance(obj, BaseModel) and "source_evidence" in type(obj).model_fields
 
-    def _ground_block(self, block: BaseModel, context: str, description: str):
-        """Internal helper to call langextract for a specific Pydantic block."""
-        try:
-            from langextract import extraction as le
-            from langextract.core import data as le_data
+        for name in type(master).model_fields:
+            value = getattr(master, name, None)
+            if is_groundable(value):
+                blocks.append(value)
+            elif isinstance(value, list):
+                blocks.extend(item for item in value if is_groundable(item))
 
-            # Use raw extraction to find offsets and snippets
-            # We provide the existing values in the block as 'guidance' (few-shot)
-            examples = [] # In a real implementation, we'd pull these from a registry
-            
-            # Simple wrapper to make langextract work with our context
-            # Note:langextract typically wants Gemini, but we can configure it for our VLM
-            grounding_result = le.extract(
-                text_or_documents=context,
-                prompt_description=f"Extract {description} as structured data.",
-                examples=examples, # Ideally populated with high-quality samples
-                model_id=self.model_id,
-            )
+        if not blocks:
+            return
+        logger.info(f"      [Grounding] Locating source evidence for {len(blocks)} block(s)...")
+        for block in blocks:
+            self._ground_block(block, context_markdown)
 
-            # Map langextract's AnnotatedDocument evidence back to our SourceEvidence
-            # This is where the magic happens: linking text offsets to Pydantic fields.
-            # For now, we'll simulate the link by finding snippets in the source.
-            if hasattr(block, 'source_evidence'):
-                block.source_evidence = SourceEvidence(
-                    text_snippet=context[:200] + "...", # Placeholder for actual offset logic
-                    page_number=1,
-                    confidence=0.95
-                )
-        except ImportError:
-            logger.warning("Langextract not found. Grounding skipped.")
-        except Exception as e:
-            logger.error(f"Grounding failed for block: {e}")
+    def _ground_block(self, block: BaseModel, context: str) -> None:
+        """Fill ``block.source_evidence`` with the best real span for its values.
+
+        Never overwrites evidence the model itself produced — the LLM's own
+        citation takes priority; this only recovers blocks it left blank.
+        """
+        if getattr(block, "source_evidence", None):
+            return
+
+        payload = block.model_dump(exclude={"source_evidence"})
+        stats = self._verify_string_spans(payload, context)
+        provenance = stats.get("provenance", [])
+        if not provenance:
+            return
+
+        best = max(
+            provenance,
+            key=lambda p: (p.get("ratio", 0), len(p.get("snippet") or "")),
+        )
+        evidence = SourceEvidence(
+            text_snippet=best.get("snippet"),
+            page_number=best.get("page"),
+            confidence=best.get("ratio", 1.0),
+        )
+
+        # Match the declared field shape (Optional[SourceEvidence] in the
+        # built-in schemas; synthesized schemas may declare a list).
+        annotation = type(block).model_fields["source_evidence"].annotation
+        wants_list = list in {get_origin(a) for a in (*get_args(annotation), annotation)}
+        block.source_evidence = [evidence] if wants_list else evidence
 
     def _harvest_as_markdown(
         self,

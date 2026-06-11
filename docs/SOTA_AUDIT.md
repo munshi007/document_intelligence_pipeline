@@ -254,7 +254,15 @@ budget, baseline reproduction, and the literature confirmation above.
   `514-523` vendor-string block) rewritten structural-only on branch
   `feat/schema-hints` (merged from `fix/purge-hardcoded-vocab`). Validated by 10-doc
   A/B: 684 leaves identical, 0 lost, grounding flat.
-- ⬜ **Killer #3 (remainder):** `agent.py:194,1698-1744,1804-1810`;
-  `discovery_agent.py:548-567`; `schema_engine.py:251` — still hardcoded.
+- ✅ **Killer #3 (prompt + dedup):** `agent.py:194` prompt examples de-hardcoded and
+  the parameters-dedup (`1698-1744`) made structural (commit `08098f7`).
+- ✅ **Killer #3 (grounding whitelist):** the `_ground_block` langextract stub
+  (discarded LLM call + fabricated `context[:200]` evidence at page 1/conf 0.95)
+  replaced by deterministic block grounding via the span verifier — real snippet,
+  real page, ratio as confidence; the block whitelist
+  (`electrical/.../invoice_header`) is gone: any sub-model declaring
+  `source_evidence` is grounded, schema-agnostically.
+- ⬜ **Killer #3 (remainder):** `discovery_agent.py:548-567` (scout few-shot);
+  `schema_engine.py:251` — still hardcoded.
 - ⬜ **Killer #1 (vision), #2 (calibration):** not started.
 - ⬜ **Literature confirmation:** not started — **the gating blocker.**

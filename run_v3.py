@@ -68,7 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Vision model for layout parsing")
     p.add_argument("--distill", action="store_true", help="Enable distillation (data capture)")
     p.add_argument("--with_grounding", action="store_true",
-                   help="Enable langextract-based precision grounding")
+                   help="Enable span-verified precision grounding")
 
     # Ablation flags — historically declared but never wired through the pipeline.
     p.add_argument("--no_routing", action="store_true",
