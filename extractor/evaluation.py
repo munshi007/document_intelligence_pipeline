@@ -294,12 +294,19 @@ def evaluate_extraction(
         # repaired list is the audit trail; adding it double-counted and
         # pushed the rate above 1.0 after post-retry refreshes.
         g_grounded = g_verified
+        # Calibrated confidence: mean per-leaf grounding score — the
+        # continuous counterpart of pass_rate (partial credit for snaps
+        # and near-misses instead of a binary grounded/not-grounded).
+        conf_map = grounding_stats.get("field_confidence") or {}
         grounding_verification_block = {
             "grounding_checked": g_checked,
             "grounding_verified": g_verified,
             "grounding_repaired": g_repaired,
             "grounding_flagged": g_flagged,
             "grounding_pass_rate": round(g_grounded / g_checked, 4) if g_checked else None,
+            "grounding_confidence": (
+                round(sum(conf_map.values()) / len(conf_map), 4) if conf_map else None
+            ),
         }
         # Recall axis: precision rates only judge values that are present;
         # these report source tables whose rows never reached the record.

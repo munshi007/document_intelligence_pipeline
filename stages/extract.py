@@ -128,12 +128,19 @@ def _grounding_summary(gr_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str,
     # `repaired` is the audit trail; adding it here double-counted and pushed
     # pass_rate above 1.0 after post-retry refreshes.
     grounded = verified
+    # Calibrated confidence: mean per-leaf grounding score (verbatim=1.0,
+    # snapped=match ratio, unverifiable=best similarity). Differs from
+    # pass_rate by giving partial credit instead of a binary grounded/not.
+    conf_map = gr_stats.get("field_confidence") or {}
     summary = {
         "checked": checked,
         "verified": verified,
         "repaired": repaired,
         "flagged": len(flagged_list),
         "pass_rate": round(grounded / checked, 4) if checked else None,
+        "confidence": (
+            round(sum(conf_map.values()) / len(conf_map), 4) if conf_map else None
+        ),
         "unverified": [
             {
                 "path": f.get("path"),

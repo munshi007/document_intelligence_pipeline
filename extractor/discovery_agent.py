@@ -822,7 +822,10 @@ Respond ONLY with a JSON object in exactly this shape:
         extra_fields["reasoning_thoughts"] = (Optional[str], Field(None, description="Step-by-step reasoning for the extraction"))
         extra_fields["page_references"] = (List[int], Field(default_factory=list, description="Page numbers (integers) supporting the extraction. Use the <!-- page:N --> markers in the source markdown."))
         extra_fields["source_evidence"] = (List[SourceEvidence], Field(default_factory=list, description="3–6 short source snippets (≤200 chars each) with page numbers grounding the top extractions."))
-        extra_fields["confidence_score"] = (float, Field(1.0))
+        extra_fields["confidence_score"] = (
+            Optional[float],
+            Field(None, description="Computed by the grounding verifier — do not self-report."),
+        )
 
         dyn_model = create_model(f"{root_name}WithMeta", __base__=dyn_model, **extra_fields)
         return dyn_model
@@ -959,7 +962,7 @@ Respond ONLY with a JSON object in exactly this shape:
         if "page_references" not in master_model.model_fields:
             extra_fields["page_references"] = (List[int], Field(default_factory=list))
         if "confidence_score" not in master_model.model_fields:
-            extra_fields["confidence_score"] = (float, 1.0)
+            extra_fields["confidence_score"] = (Optional[float], None)
             
         if extra_fields:
             master_model = create_model(f"{root_name}WithMeta", __base__=master_model, **extra_fields)

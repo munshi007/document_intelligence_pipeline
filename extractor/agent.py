@@ -325,10 +325,15 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         Skips meta/enum/reasoning fields. Returns audit stats:
           {checked, verified, repaired: [{path, before, after, ratio}],
            flagged:  [{path, value, best_ratio}],
-           provenance: [{path, snippet, page, ratio}]}
+           provenance: [{path, snippet, page, ratio}],
+           field_confidence: {path: float}}
         `provenance` records the page (from <!-- page:N --> markers in the
         source markdown) for every verified/repaired field — used by the
         caller to auto-fill `page_references` and `source_evidence`.
+        `field_confidence` scores every assessed leaf by its grounding
+        outcome — verbatim/case-restored = 1.0, snapped = the match ratio,
+        unverifiable = its best similarity to any source span — and is the
+        basis for the record's calibrated `confidence_score`.
 
         Mutates `record` in place.
         """
@@ -424,6 +429,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         stats: Dict[str, Any] = {
             "checked": 0, "verified": 0,
             "repaired": [], "flagged": [], "provenance": [],
+            "field_confidence": {},
         }
 
         # ── numeric verification helpers ──
@@ -493,11 +499,13 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
             row_nums = numbers_in(row) if row else []
             if any(num_eq(target, c) for c in row_nums):
                 stats["verified"] += 1
+                stats["field_confidence"][full_path] = 1.0
                 return
             if doc_nums is None:
                 doc_nums = numbers_in(source_markdown or "")
             if any(num_eq(target, c) for c in doc_nums):
                 stats["verified"] += 1
+                stats["field_confidence"][full_path] = 1.0
                 return
             # Row-scoped digit snap: the model produced a number close to —
             # but not equal to — one in its own row (digit insertion/drop,
@@ -525,6 +533,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                     )
                     parent[key] = repaired_val
                     stats["verified"] += 1
+                    stats["field_confidence"][full_path] = round(best_ratio, 3)
                     stats["repaired"].append({
                         "path": full_path, "before": val, "after": repaired_val,
                         "ratio": round(best_ratio, 3), "kind": "numeric_snap",
@@ -535,6 +544,9 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                 "best_ratio": round(scored[0][0], 3) if scored else 0.0,
                 "kind": "numeric",
             })
+            stats["field_confidence"][full_path] = (
+                round(scored[0][0], 3) if scored else 0.0
+            )
 
         def is_candidate(key: str, val: Any) -> bool:
             if key in SKIP_FIELDS or not isinstance(val, str):
@@ -561,11 +573,18 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         def walk(node: Any, path: str = "") -> None:
             if isinstance(node, dict):
                 for k, v in list(node.items()):
+                    if k == "source_evidence":
+                        # Provenance the pipeline itself attaches (snippets,
+                        # page numbers, ratios) — auditing it as extracted
+                        # content inflates `checked` and flags snippets the
+                        # verifier produced in the first place.
+                        continue
                     full = f"{path}.{k}" if path else k
                     if is_candidate(k, v):
                         stats["checked"] += 1
                         if normalize(v) in norm_source:
                             stats["verified"] += 1
+                            stats["field_confidence"][full] = 1.0
                             restored = recover_source_case(v)
                             if restored and restored != v:
                                 # Same text per the source, but the model
@@ -596,6 +615,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                 # values verbatim; summing the two double-
                                 # counted and pushed pass_rate above 1.0).
                                 stats["verified"] += 1
+                                stats["field_confidence"][full] = round(ratio, 3)
                                 stats["repaired"].append({
                                     "path": full, "before": v,
                                     "after": repaired, "ratio": round(ratio, 3),
@@ -607,6 +627,7 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                                     "path": full, "value": v,
                                     "best_ratio": round(ratio, 3),
                                 })
+                                stats["field_confidence"][full] = round(ratio, 3)
                     elif is_numeric_candidate(k, v):
                         check_number(node, k, v, full)
                     else:
@@ -617,6 +638,55 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
 
         walk(record)
         return stats
+
+    @staticmethod
+    def _calibrated_field_confidence(grounding_stats: Dict[str, Any]) -> Dict[str, float]:
+        """Per-leaf confidence map, clamped by the repair audit.
+
+        A snapped value re-verifies verbatim in the post-retry refresh (it IS
+        source text now), but our confidence that it is the RIGHT value is the
+        snap ratio — so each repaired path is capped at its repair ratio.
+        """
+        field_conf = dict(grounding_stats.get("field_confidence", {}))
+        for rep in grounding_stats.get("repaired", []):
+            p = rep.get("path")
+            if p in field_conf:
+                field_conf[p] = min(field_conf[p], rep.get("ratio", 1.0))
+        return field_conf
+
+    @staticmethod
+    def _apply_calibrated_confidence(
+        record: Dict[str, Any],
+        field_confidence: Dict[str, float],
+    ) -> None:
+        """Overwrite every ``confidence_score`` key in `record` with the mean
+        grounding confidence of the assessed leaves under it.
+
+        The model's self-reported confidence is a constant 1.0 regardless of
+        evidence; the verifier's per-leaf scores (verbatim=1.0, snapped=match
+        ratio, unverifiable=best similarity) are the honest signal. A block
+        with no assessed leaves gets None — "not assessed", not "certain".
+        """
+        def apply(node: Any, path: str) -> None:
+            if isinstance(node, dict):
+                if "confidence_score" in node:
+                    prefix = f"{path}." if path else ""
+                    vals = [
+                        v for k, v in field_confidence.items()
+                        if not prefix or k.startswith(prefix)
+                    ]
+                    node["confidence_score"] = (
+                        round(sum(vals) / len(vals), 4) if vals else None
+                    )
+                for k, v in node.items():
+                    if k == "confidence_score":
+                        continue
+                    apply(v, f"{path}.{k}" if path else k)
+            elif isinstance(node, list):
+                for i, item in enumerate(node):
+                    apply(item, f"{path}[{i}]")
+
+        apply(record, "")
 
     # ── Recall coverage (omission detection + targeted list recovery) ──
     #
@@ -2004,6 +2074,19 @@ SOURCE CONTENT (Segment {i+1}/{len(batches)}):
         grounding_stats["retries_attempted"] = len(retry_audit)
         grounding_stats["retries_accepted"] = len(accepted_retries)
 
+        # Calibrated confidence (audit killer #2): the model self-reports
+        # confidence_score=1.0 unconditionally; the verifier actually knows.
+        field_conf = self._calibrated_field_confidence(grounding_stats)
+        grounding_stats["field_confidence"] = field_conf
+        if isinstance(refined_dict, dict):
+            self._apply_calibrated_confidence(refined_dict, field_conf)
+            if "confidence_score" in refined_dict:
+                logger.info(
+                    f"      [Grounding] confidence_score = "
+                    f"{refined_dict['confidence_score']} "
+                    f"(calibrated over {len(field_conf)} assessed leaves)"
+                )
+
         # Auto-fill page_references / source_evidence from grounding provenance.
         # We only fill empty fields — the LLM's own answers take priority.
         provenance = grounding_stats.get("provenance", [])
@@ -2431,7 +2514,9 @@ No preamble, no markdown code blocks, JUST the JSON.
         return ExtractionResult(
             schema_title="LibrarianUniversalHardware",
             data=legacy_data,
-            confidence_score=1.0,
+            # Calibrated by _finalize_record; 0.0 (the field default) when
+            # grounding produced no assessment — never a blanket 1.0.
+            confidence_score=getattr(hkg_result, "confidence_score", None) or 0.0,
         )
 
 

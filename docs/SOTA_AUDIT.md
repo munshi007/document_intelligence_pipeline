@@ -278,5 +278,20 @@ budget, baseline reproduction, and the literature confirmation above.
   cross-domain hallucination in discovered skeletons. Neither masquerades as
   domain-agnostic logic; both are intentionally retained. Same for the
   regex signal lists in `schema_engine.py`'s heuristic domain/subtype router.
-- ⬜ **Killer #1 (vision), #2 (calibration):** not started.
+- ✅ **Killer #2 (calibration wiring):** `confidence_score` is no longer a
+  constant. The span verifier emits a per-leaf `field_confidence` map
+  (verbatim/case-restored = 1.0, fuzzy/numeric snap = match ratio,
+  unverifiable = best similarity to any source span; snapped paths stay
+  capped at their snap ratio through the post-retry refresh), and
+  `_finalize_record` overwrites every `confidence_score` key — record root
+  and sub-blocks — with the mean over the leaves under it (None = "not
+  assessed"). All `= 1.0` defaults removed (`schema_definitions.py` ×6,
+  `discovery_agent.py` dyn-models ×2, legacy `extract_from_graph`).
+  Surfaced as `_grounding.confidence` and eval `grounding_confidence`.
+- ⬜ **Killer #2 (ECE table):** the reliability/ECE evaluation against
+  `data/ground_truth/` (25 EVAL_DATA docs) is the remaining evaluation-
+  campaign work — the per-field signal it needs now exists.
+- ⬜ **Killer #1 (vision):** not started. Note: the calibrated per-field
+  confidence is the routing signal the vision plan (action **a**) needs
+  ("route to vision when grounding confidence is low").
 - ⬜ **Literature confirmation:** not started — **the gating blocker.**

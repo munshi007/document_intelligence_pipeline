@@ -133,7 +133,9 @@ class LibrarianUniversalHardware(BaseModel):
         max_items=10,
         description="List ONLY primary pages where major data was found (max 10). NO LOOPS."
     )
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
 
 
 class DocumentIdentity(BaseModel):
@@ -175,7 +177,9 @@ class LibrarianGeneralClerk(BaseModel):
     tables_markdown: List[str] = Field(default_factory=list, description="Raw markdown representation of all tables found")
     reasoning_thoughts: Optional[str] = Field(None, description="The internal logic/CoT used to arrive at this extraction")
     page_references: List[int] = Field(default_factory=list)
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
 
 
 class InvoiceLineItem(BaseModel):
@@ -223,7 +227,9 @@ class LibrarianInvoiceRecord(BaseModel):
     lines: Optional[InvoiceLinesBlock] = Field(default_factory=InvoiceLinesBlock)
     totals: Optional[TotalsBlock] = Field(default_factory=TotalsBlock)
     page_references: List[int] = Field(default_factory=list)
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
 
 
 class LibrarianBusinessRecord(BaseModel):
@@ -234,7 +240,9 @@ class LibrarianBusinessRecord(BaseModel):
     timeline: List[TimelineEvent] = Field(default_factory=list)
     tables_markdown: List[str] = Field(default_factory=list)
     page_references: List[int] = Field(default_factory=list)
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
 
 
 class ProductCommercialData(BaseModel):
@@ -264,7 +272,9 @@ class ProductPdfRecord(BaseModel):
     standards: List[str] = Field(default_factory=list)
     commercial_data: Optional[ProductCommercialData] = Field(default_factory=ProductCommercialData)
     page_references: List[int] = Field(default_factory=list)
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
 
 
 class TechnicalDatasheetRecord(BaseModel):
@@ -312,4 +322,6 @@ class TechnicalDatasheetRecord(BaseModel):
         description="Step-by-step extraction reasoning (internal chain-of-thought).",
     )
     page_references: List[int] = Field(default_factory=list)
-    confidence_score: float = 1.0
+    # Computed by the grounding verifier at finalize time (mean per-leaf
+    # grounding confidence); None = not assessed. Never a self-reported 1.0.
+    confidence_score: Optional[float] = None
