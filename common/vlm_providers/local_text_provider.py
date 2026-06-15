@@ -402,6 +402,170 @@ class LocalTextProvider(BaseVLMProvider):
         return partial
 
     @staticmethod
+    def _list_item_model(annotation: Any) -> Optional[Type]:
+        """Return the BaseModel item type of a ``List[ItemModel]`` annotation.
+
+        Unwraps ``Optional[List[ItemModel]]`` too. Returns None for scalar
+        lists (``List[str]``) or non-list fields. Schema-agnostic helper.
+        """
+        import typing
+        origin = typing.get_origin(annotation)
+        if origin is typing.Union:
+            for arg in typing.get_args(annotation):
+                model = LocalTextProvider._list_item_model(arg)
+                if model is not None:
+                    return model
+            return None
+        if origin is list:
+            args = typing.get_args(annotation)
+            if args:
+                a0 = args[0]
+                if isinstance(a0, type) and issubclass(a0, pydantic.BaseModel):
+                    return a0
+        return None
+
+    @staticmethod
+    def _realign_leftover_keys(item: Dict[str, Any], item_fields: set, required: List[str]) -> Dict[str, Any]:
+        """Map an item's off-schema keys onto still-missing required fields.
+
+        When a flattened item carries the real value under a drifted key
+        (e.g. ``param`` instead of ``name``), move the best leftover string
+        onto a missing required field. Also normalises a numeric ``min/max``
+        range into an empty required ``value`` when the item model defines
+        that triad. Gated entirely on the item model's own field names — no
+        per-document or per-field hardcoding.
+        """
+        leftover = [k for k in list(item.keys()) if k not in item_fields]
+        for f in required:
+            if item.get(f) not in (None, ""):
+                continue
+            for k in list(leftover):
+                v = item.get(k)
+                if isinstance(v, str) and v.strip():
+                    item[f] = item.pop(k)
+                    leftover.remove(k)
+                    break
+        # Range -> value normalisation for parameter-like {min,max,value} triads.
+        if {"value", "min_value", "max_value"} <= item_fields and item.get("value") in (None, ""):
+            mn, mx = item.get("min_value"), item.get("max_value")
+            if mn not in (None, "") and mx not in (None, ""):
+                item["value"] = f"{mn}...{mx}"
+            elif mn not in (None, ""):
+                item["value"] = str(mn)
+            elif mx not in (None, ""):
+                item["value"] = str(mx)
+        return item
+
+    @staticmethod
+    def _unwrap_grouped_list_items(partial: Dict[str, Any], response_model: Type) -> Dict[str, Any]:
+        """Flatten group-nested list items into the flat item list.
+
+        The extraction model sometimes emits a *grouped* shape for a
+        ``List[ItemModel]`` field, wrapping the real rows in a sub-list::
+
+            "parameters": [{"name": "Voltage", "values": [ {..}, {..}, .. ]}]
+
+        Pydantic keeps only the wrapper and silently drops the inner array,
+        which destroyed recall (34 params -> 1 on the M12 datasheet). Detect
+        a wrapper whose nested list (under an OFF-schema key) overlaps the
+        item schema better than the wrapper's own keys, and flatten the
+        inner rows up. Schema-driven: the only knowledge used is the item
+        model's own field names, so declared nested fields (e.g. a
+        connector's ``pins``) are never touched.
+        """
+        if not isinstance(partial, dict):
+            return partial
+        for field_name, field_info in response_model.model_fields.items():
+            seq = partial.get(field_name)
+            if not isinstance(seq, list) or not seq:
+                continue
+            item_model = LocalTextProvider._list_item_model(field_info.annotation)
+            if item_model is None:
+                continue
+            item_fields = set(item_model.model_fields.keys())
+            required = [n for n, fi in item_model.model_fields.items() if fi.is_required()]
+
+            def _overlap(d: Any) -> int:
+                return sum(1 for k in d if k in item_fields) if isinstance(d, dict) else 0
+
+            flat: List[Any] = []
+            changed = False
+            for el in seq:
+                if not isinstance(el, dict):
+                    flat.append(el)
+                    continue
+                direct = _overlap(el)
+                best = None  # (inner_items, overlap)
+                for k, v in el.items():
+                    if k in item_fields:
+                        continue  # declared nested field — leave it alone
+                    if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                        nov = max(_overlap(x) for x in v)
+                        if nov > direct and (best is None or nov > best[1]):
+                            best = (v, nov)
+                if best is None:
+                    flat.append(el)
+                    continue
+                # Carry the wrapper's own valid scalar fields down as defaults.
+                carry = {k: v for k, v in el.items()
+                         if k in item_fields and not isinstance(v, (list, dict)) and v not in (None, "")}
+                for inner in best[0]:
+                    merged = dict(inner)
+                    LocalTextProvider._realign_leftover_keys(merged, item_fields, required)
+                    for ck, cv in carry.items():
+                        if merged.get(ck) in (None, ""):
+                            merged[ck] = cv
+                    flat.append(merged)
+                changed = True
+            if changed:
+                logger.info(
+                    f"Unwrapped group-nested items in '{field_name}': "
+                    f"{len(seq)} wrapper(s) -> {len(flat)} flat item(s)."
+                )
+                partial[field_name] = flat
+        return partial
+
+    @staticmethod
+    def _tolerant_list_salvage(payload: Dict[str, Any], response_model: Type[T]) -> Optional[T]:
+        """Validate, dropping only the individual list items that fail.
+
+        A single malformed row (e.g. a bad nested ``page_number``) otherwise
+        sinks the whole document's recall, because ``model_validate`` is
+        all-or-nothing. Here each list field's items are validated one by one;
+        the valid ones are kept and the object is re-validated. Returns the
+        validated model, or None if even the trimmed object will not validate.
+        """
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return response_model.model_validate(payload)
+        except Exception:
+            pass
+        import copy
+        trimmed = copy.deepcopy(payload)
+        dropped = 0
+        for field_name, field_info in response_model.model_fields.items():
+            seq = trimmed.get(field_name)
+            item_model = LocalTextProvider._list_item_model(field_info.annotation)
+            if item_model is None or not isinstance(seq, list):
+                continue
+            kept = []
+            for it in seq:
+                try:
+                    item_model.model_validate(it)
+                    kept.append(it)
+                except Exception:
+                    dropped += 1
+            trimmed[field_name] = kept
+        try:
+            model = response_model.model_validate(trimmed)
+            if dropped:
+                logger.warning(f"Tolerant salvage kept the record by dropping {dropped} invalid list item(s).")
+            return model
+        except Exception:
+            return None
+
+    @staticmethod
     def _append_jsonl(path: Optional[str], payload: Dict[str, Any]) -> None:
         if not path:
             return
@@ -540,10 +704,19 @@ SCHEMA:
                     
                     _p1 = self._map_hallucinated_fields(_p1_orig, response_model)
                     _p1 = self._coerce_list_fields(_p1, response_model)
+                    _p1 = self._unwrap_grouped_list_items(_p1, response_model)
                     _p1 = self._coerce_type_mismatches(_p1, response_model)
                     return response_model.model_validate(_p1)
                 except Exception as ve:
                     logger.error(f"Pydantic Validation Error: {ve}")
+                    # Before the lossy repair *regeneration*, salvage this
+                    # already-parsed (often rich) payload by dropping only the
+                    # individual list items that fail validation — one bad row
+                    # must not cost the whole document's recall.
+                    salvaged = self._tolerant_list_salvage(_p1, response_model)
+                    if salvaged is not None:
+                        logger.warning("Recovered attempt-1 payload via tolerant per-item salvage.")
+                        return salvaged
                     self._append_jsonl(
                         os.path.join(trace_dir, "parse_failures.jsonl") if trace_dir else None,
                         {
@@ -571,6 +744,7 @@ RAW OUTPUT:
                 try:
                     _p2 = self._map_hallucinated_fields(json.loads(repaired_payload), response_model)
                     _p2 = self._coerce_list_fields(_p2, response_model)
+                    _p2 = self._unwrap_grouped_list_items(_p2, response_model)
                     _p2 = self._coerce_type_mismatches(_p2, response_model)
                     return response_model.model_validate(_p2)
                 except Exception as ve:
@@ -598,10 +772,14 @@ RAW OUTPUT:
                                 partial[field_name] = field_info.default_factory()
                     partial = self._coerce_list_fields(partial, response_model)
                     partial = self._map_hallucinated_fields(partial, response_model)
+                    partial = self._unwrap_grouped_list_items(partial, response_model)
                     partial = self._coerce_type_mismatches(partial, response_model)
                     try:
                         return response_model.model_validate(partial)
                     except Exception:
+                        salvaged = self._tolerant_list_salvage(partial, response_model)
+                        if salvaged is not None:
+                            return salvaged
                         # FINAL SAFETY NET: use model_construct to never lose data
                         logger.warning(f"Final salvage: using model_construct for {response_model.__name__}")
                         return response_model.model_construct(**partial)
