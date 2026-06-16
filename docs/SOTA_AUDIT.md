@@ -288,10 +288,21 @@ budget, baseline reproduction, and the literature confirmation above.
   assessed"). All `= 1.0` defaults removed (`schema_definitions.py` ×6,
   `discovery_agent.py` dyn-models ×2, legacy `extract_from_graph`).
   Surfaced as `_grounding.confidence` and eval `grounding_confidence`.
-- ⬜ **Killer #2 (ECE table):** the reliability/ECE evaluation against
-  `data/ground_truth/` (25 EVAL_DATA docs) is the remaining evaluation-
-  campaign work — the per-field signal it needs now exists.
+- ✅ **Killer #2 (ECE table):** done (#54). Manual stratified calibration of the
+  per-leaf grounding confidence against hand-labeled source-support over 24
+  EVAL_DATA datasheets (n=107). **ECE 0.165, MCE 0.571, Brier 0.131; the score
+  is systematically *under*-confident** (mean conf 0.712 vs base rate 0.869) —
+  conservative, the safe direction for hallucination suppression. Root-caused to
+  narrow numeric/unit normalization (comma-decimals, number-words, unit
+  paraphrase scored 0 despite being present); concrete fix proposed. Full
+  writeup + reliability diagram in [`docs/CALIBRATION.md`](CALIBRATION.md).
+  (Note: the earlier "25 docs" was off — `annotations.jsonl` is noisy
+  pdfplumber pseudo-labels, unusable; the gpt-4o silver set + manual judgement
+  is what the calibration rests on.)
 - ⬜ **Killer #1 (vision):** not started. Note: the calibrated per-field
   confidence is the routing signal the vision plan (action **a**) needs
   ("route to vision when grounding confidence is low").
-- ⬜ **Literature confirmation:** not started — **the gating blocker.**
+- ✅ **Literature confirmation:** RESOLVED 2026-06-08 — see §6 (Prior-Art
+  Verification). The grounding *constellation* is prior art (SciEx, LangExtract,
+  AEVS, SPIRES); the surviving contribution is the systems/engineering framing.
+  (This line previously read "not started — the gating blocker"; §6 superseded it.)

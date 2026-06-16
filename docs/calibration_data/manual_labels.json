@@ -1,0 +1,551 @@
+{
+  "0": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "-22",
+    "reason": "'-22': doc has only -25 C / -40 C, no -22 -> mangled, absent"
+  },
+  "2": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "0  .",
+    "reason": "'0  .': OCR garbage fragment"
+  },
+  "5": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "⊺/m",
+    "reason": "'⊺/m': corrupted unit glyph, not a value"
+  },
+  "6": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "+±%5",
+    "reason": "'+Â±%5': corrupted/reordered, not a faithful value"
+  },
+  "7": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "2.5"
+  },
+  "9": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "0 0",
+    "reason": "'0 0': garbage fragment"
+  },
+  "11": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "+/- 5%"
+  },
+  "12": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "4.3"
+  },
+  "13": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "4.3"
+  },
+  "14": {
+    "label": 0,
+    "conf": 0.247,
+    "value": "I  c 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2",
+    "reason": "'I c 2 2 2 2 ...': hallucinated repetition"
+  },
+  "15": {
+    "label": 0,
+    "conf": 0.21,
+    "value": "Aon 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 ",
+    "reason": "'Aon 2 2 2 2 ...': hallucinated repetition"
+  },
+  "31": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "-40 \\u2dc"
+  },
+  "36": {
+    "label": 0,
+    "conf": 0.714,
+    "value": "kV ↵ 6la",
+    "reason": "'kV ↵ 6la': corrupted '2,5 kV @ 60 s' -> '6la' non-term, digit lost"
+  },
+  "38": {
+    "label": 1,
+    "conf": 0.753,
+    "value": "Traversing distance (C track) horizontal"
+  },
+  "41": {
+    "label": 1,
+    "conf": 0.778,
+    "value": "Wire color"
+  },
+  "46": {
+    "label": 1,
+    "conf": 0.714,
+    "value": "60 ²/km \\u20a 0"
+  },
+  "48": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "74 ± 3 Shore D"
+  },
+  "51": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "80 °C / 90 °C @ 10000 h Operation"
+  },
+  "60": {
+    "label": 1,
+    "conf": 0.8,
+    "value": "80 \\u2dc / 90 \\u2dc ↯ 10000 h Operation"
+  },
+  "71": {
+    "label": 1,
+    "conf": 0.811,
+    "value": "10 Mio. @ 25 \\u2dc C"
+  },
+  "72": {
+    "label": 1,
+    "conf": 0.889,
+    "value": "± 360 °/m"
+  },
+  "76": {
+    "label": 1,
+    "conf": 0.857,
+    "value": "kV @ 60"
+  },
+  "85": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "depending on cable quality"
+  },
+  "94": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Oil resistance"
+  },
+  "1": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "+/- 5"
+  },
+  "44": {
+    "label": 1,
+    "conf": 0.727,
+    "value": "Filling"
+  },
+  "49": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "0,34 mm"
+  },
+  "84": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Additional condition temperature range"
+  },
+  "3": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "0.6"
+  },
+  "4": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "+/- 5%"
+  },
+  "10": {
+    "label": 1,
+    "conf": 0.0,
+    "value": "+/- 5%"
+  },
+  "16": {
+    "label": 1,
+    "conf": 0.564,
+    "value": "3.3 meters per second"
+  },
+  "17": {
+    "label": 1,
+    "conf": 0.5,
+    "value": "thirty five cycles per minute"
+  },
+  "18": {
+    "label": 0,
+    "conf": 0.581,
+    "value": "Filling amount",
+    "reason": "'Filling amount': source has 'Filler', term 'amount' absent (changes meaning)"
+  },
+  "21": {
+    "label": 1,
+    "conf": 0.54,
+    "value": "plus minus 360 degrees per meter"
+  },
+  "28": {
+    "label": 1,
+    "conf": 0.64,
+    "value": "one million"
+  },
+  "32": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "1 million"
+  },
+  "33": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "cycles per minute"
+  },
+  "35": {
+    "label": 0,
+    "conf": 0.696,
+    "value": "Jacket weight",
+    "reason": "'Jacket weight': source says 'Cable weight' (different referent)"
+  },
+  "37": {
+    "label": 1,
+    "conf": 0.769,
+    "value": "5 meters"
+  },
+  "42": {
+    "label": 1,
+    "conf": 0.737,
+    "value": "Protect the connectors by suitable measures from mechanical "
+  },
+  "43": {
+    "label": 1,
+    "conf": 0.755,
+    "value": "Ingredients freedom (jacket)"
+  },
+  "54": {
+    "label": 1,
+    "conf": 0.857,
+    "value": "1,25 mm"
+  },
+  "57": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "58 ± 3 Shore D"
+  },
+  "62": {
+    "label": 1,
+    "conf": 0.839,
+    "value": "Color arrangement"
+  },
+  "64": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "41,8 g/m"
+  },
+  "67": {
+    "label": 1,
+    "conf": 0.816,
+    "value": "Resistance wire insulation"
+  },
+  "86": {
+    "label": 1,
+    "conf": 0.966,
+    "value": "Traversing distance (C-track)"
+  },
+  "90": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Tolerance outer diameter (sheath)"
+  },
+  "8": {
+    "label": 0,
+    "conf": 0.0,
+    "value": "0 n",
+    "reason": "'0 n': garbage fragment"
+  },
+  "78": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Commercial data"
+  },
+  "106": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Stripping length (jacket)"
+  },
+  "19": {
+    "label": 0,
+    "conf": 0.5,
+    "value": "22.0",
+    "reason": "'22.0' (min_value): no 22 in this doc (has 2 Mio., -25/-40 C)"
+  },
+  "24": {
+    "label": 1,
+    "conf": 0.5,
+    "value": "2000000.0"
+  },
+  "30": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "Conformity Product Standard"
+  },
+  "45": {
+    "label": 1,
+    "conf": 0.727,
+    "value": "Filling"
+  },
+  "50": {
+    "label": 1,
+    "conf": 0.836,
+    "value": "Commercial Data ECLASS-6.0"
+  },
+  "66": {
+    "label": 1,
+    "conf": 0.8,
+    "value": "10.0"
+  },
+  "80": {
+    "label": 1,
+    "conf": 0.916,
+    "value": "wire arrangement | brown, black, blue, white, green-yel"
+  },
+  "82": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "customs tariff number"
+  },
+  "91": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "90.0"
+  },
+  "93": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "mm²"
+  },
+  "96": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Outer diameter insulation"
+  },
+  "102": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "300.0"
+  },
+  "20": {
+    "label": 1,
+    "conf": 0.5,
+    "value": "2000000.0"
+  },
+  "25": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "5.0"
+  },
+  "34": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "5.0"
+  },
+  "74": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "outer"
+  },
+  "92": {
+    "label": 1,
+    "conf": 0.941,
+    "value": "outer Ø"
+  },
+  "22": {
+    "label": 1,
+    "conf": 0.5,
+    "value": "2000000.0"
+  },
+  "23": {
+    "label": 0,
+    "conf": 0.545,
+    "value": " u00d po",
+    "reason": "'u00d po': leftover escape garbage"
+  },
+  "47": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "27279218"
+  },
+  "52": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "27279218"
+  },
+  "53": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "27279218"
+  },
+  "75": {
+    "label": 1,
+    "conf": 0.875,
+    "value": "27279218"
+  },
+  "26": {
+    "label": 0,
+    "conf": 0.609,
+    "value": "Color Winding",
+    "reason": "'Color Winding': source has 'color' but 'winding' absent"
+  },
+  "40": {
+    "label": 1,
+    "conf": 0.727,
+    "value": "Filling"
+  },
+  "56": {
+    "label": 1,
+    "conf": 0.889,
+    "value": "Ω/km"
+  },
+  "79": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Important installation notes"
+  },
+  "100": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "-30.0"
+  },
+  "27": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "250.0"
+  },
+  "29": {
+    "label": 1,
+    "conf": 0.667,
+    "value": "250.0"
+  },
+  "55": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "58": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "59": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "61": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "63": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "68": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "69": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "70": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "73": {
+    "label": 1,
+    "conf": 0.867,
+    "value": "strands (wire)"
+  },
+  "103": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "wire arrangement"
+  },
+  "39": {
+    "label": 1,
+    "conf": 0.727,
+    "value": "A coded"
+  },
+  "87": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "M12 male 90°"
+  },
+  "98": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Good, application-related testing"
+  },
+  "65": {
+    "label": 1,
+    "conf": 0.857,
+    "value": "mm²"
+  },
+  "77": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "30 V"
+  },
+  "81": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Environmental characteristics"
+  },
+  "83": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Operating voltage AC (UL-listed)"
+  },
+  "105": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Tightening torque"
+  },
+  "88": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Operating voltage AC max."
+  },
+  "89": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "5 x Outer diameter"
+  },
+  "99": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Travel speed (C-track)"
+  },
+  "95": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "57.0"
+  },
+  "101": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "Operating temperature min. (dynamic)"
+  },
+  "104": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "3.0"
+  },
+  "97": {
+    "label": 1,
+    "conf": 1.0,
+    "value": "chemical resistance"
+  }
+}
