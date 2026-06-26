@@ -71,6 +71,46 @@ verifier's span normalization to cover those three forms; it would lift the low
 bins toward the diagonal and cut ECE without weakening hallucination detection
 (the garbage in the 0.2–0.3 bin would still score low).
 
+## Follow-up (#55) — the fix, measured
+
+The root-cause above was acted on. `_verify_string_spans`'s normalization was
+broadened to fold **value-preserving notation** before comparison: decimal
+comma↔dot (`4,3`↔`4.3`), `±`↔`+/-` and sibling glyphs (`µ`,`×`,en/em dashes),
+`%` spacing (`5 %`↔`5%`), and post-number **scale words** (`2 Mio.`/`2 million`
+→ 2000000, German + English, word-boundaried so `millimeter`/`milliampere`
+never trip). The fold only equates *notations of the same value* — it can never
+equate two different numbers or words, so it cannot launder a fabricated value
+into a grounded one. Pinned by `tests/extraction/test_grounding_normalization.py`
+(8 tests, incl. the millimeter word-boundary guard and a value-preservation
+check that `7,7` does not verbatim-match `3,2`).
+
+**Validation (code-only delta on identical source).** Re-grounding the same 107
+labelled leaves against the same reconstructed source, changing *only* the
+verifier code (`scripts/validate_ece_delta.py`):
+
+| metric | before (#54) | after (#55) |
+|---|---:|---:|
+| ECE | 0.135 | **0.032** |
+| MCE | 0.611 | **0.445** |
+| Brier | 0.143 | **0.040** |
+| mean confidence | 0.712 | **0.850** |
+
+(base rate unchanged at 0.869; the before-numbers here are re-measured on the
+reconstructed source, slightly tighter than the 0.165 headline which used the
+persisted sidecars — the *delta* is the apples-to-apples result.) All 11
+targeted under-confident leaves moved to 1.00: the eight comma-decimal / `±`
+values (`0.6`, `2.5`, `4.3`, `+/- 5%`) that scored **0.0**, and the three scale
+words (`2000000` from `2 Mio.`) that scored **0.5**. Mean confidence now sits at
+0.850, ~0.02 under the 0.869 support rate — close to the diagonal, still on the
+conservative side. The seven leaves left at 0.0 are genuine garbage (0%
+supported), correctly scored.
+
+**Honest residual.** The worst remaining bin is `[0.50,0.60)` (3 leaves, conf
+0.555, accuracy 1.00) — values like `3.3 meters per second` vs source `3,3 m/s`.
+That is **spelled-out-unit / number-word paraphrase**, deliberately *not* folded
+here (it needs a unit lexicon, not a value-preserving glyph swap). It is the
+named follow-up, not an oversight.
+
 ## Method
 
 - **Corpus:** 24 of the 25 EVAL_DATA Murr connector/cable datasheets (one,

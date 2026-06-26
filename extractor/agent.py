@@ -346,12 +346,27 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
         }
         PAGE_MARKER = re.compile(r"<!--\s*page:(\d+)\s*-->")
 
+        # Typographic equivalences folded before comparison so a value matches
+        # the source when only its NOTATION differs — decimal comma vs dot
+        # ('4,3'/'4.3'), '±' vs '+/-', and notation spacing ('5 %'/'5%').
+        # Calibration (#54) showed these forms were scored 0.0 despite being
+        # present, making the grounding score systematically under-confident
+        # (task #55). This folding is value-PRESERVING: it never equates two
+        # different numbers or words, so it cannot launder a fabricated value
+        # into a grounded one — it only stops penalising notation drift.
+        _SYM = {"±": "+/-", "µ": "u", "μ": "u", "×": "x", "–": "-", "—": "-", "‑": "-"}
+
         def normalize(s: Any) -> str:
             if not isinstance(s, str):
                 return ""
             t = re.sub(r"<!--[^>]*-->", " ", s)
+            for a, b in _SYM.items():
+                t = t.replace(a, b)
+            t = t.lower()
+            t = re.sub(r"(?<=\d),(?=\d)", ".", t)   # decimal comma -> dot
+            t = re.sub(r"\s*%", "%", t)             # '5 %' -> '5%'
             t = re.sub(r"\s+", " ", t)
-            return t.lower().strip()
+            return t.strip()
 
         def find_page_for_span(span: str) -> Optional[int]:
             """Locate `span` in the ORIGINAL source (case-insensitive) and
@@ -463,10 +478,28 @@ Extract ONLY the following fields (these are the ONLY fields in the schema):
                 _try(t)
             return outs
 
+        # Scale words that follow a number act as multipliers: a source '2 Mio.'
+        # must match an emitted 2000000 (calibration #54 found these scored 0.5).
+        # Word-boundaried so 'millimeter'/'milliampere' never trip the 'million'
+        # branch. German + English; values only, never PDF-specific. (#55)
+        SCALE_RE = re.compile(
+            r"\s*(mio\.?|millionen|millions?|mrd\.?|milliarden|milliards?|billions?)(?![a-z])",
+            re.IGNORECASE,
+        )
+
+        def _scale_mult(word: str) -> float:
+            return 1e9 if word[0] == "b" or word.startswith(("mrd", "milliard")) else 1e6
+
         def numbers_in(text: str) -> List[float]:
+            text = text or ""
             vals: List[float] = []
-            for m in NUM_TOKEN.finditer(text or ""):
-                vals.extend(parse_token(m.group(0)))
+            for m in NUM_TOKEN.finditer(text):
+                base = parse_token(m.group(0))
+                vals.extend(base)
+                sm = SCALE_RE.match(text[m.end():])
+                if sm:
+                    mult = _scale_mult(sm.group(1))
+                    vals.extend(b * mult for b in base)
             return vals
 
         def num_eq(a: float, b: float) -> bool:
